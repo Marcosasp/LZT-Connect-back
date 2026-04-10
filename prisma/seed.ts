@@ -15,7 +15,7 @@ async function main() {
       password: '$2b$10$EpRnTzVlqHNP0.fUbXUwSOyuiXe/QLSUG6xNekdHgTGmrpHEfIoxm', // secret42
       role: 'USER',
       phone: '11988887777',
-      birthday: '01/01/1990',
+      birthday: new Date('1990-01-01T00:00:00.000Z'),
       street: 'Av. Paulista, 1000',
       city: 'São Paulo',
       state: 'SP',
@@ -30,7 +30,7 @@ async function main() {
       role: 'ADMIN',
       password: '$2b$10$EpRnTzVlqHNP0.fUbXUwSOyuiXe/QLSUG6xNekdHgTGmrpHEfIoxm', // secret42
       phone: '11977776666',
-      birthday: '01/01/1990',
+      birthday: new Date('1990-01-01T00:00:00.000Z'),
       street: 'Rua Augusta, 500',
       city: 'São Paulo',
       state: 'SP',
