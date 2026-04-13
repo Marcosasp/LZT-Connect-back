@@ -657,29 +657,20 @@ export class SalesService {
 
         return {
           ...ticket,
-          cliente: ticket.cliente ?? linkedCustomer?.razao_social,
+          cliente: ticket.cliente ?? linkedCustomer?.nome_completo,
           customer:
             ticket.customer ??
             (linkedCustomer
               ? {
-                  acao_cli: linkedCustomer.acao_cli ?? undefined,
-                  razao_social: linkedCustomer.razao_social ?? undefined,
-                  tipo_endereco: linkedCustomer.tipo_endereco ?? undefined,
+                  razao_social: linkedCustomer.nome_completo ?? undefined,
                   endereco: linkedCustomer.endereco ?? undefined,
-                  numero: linkedCustomer.numero ?? undefined,
-                  complemento: linkedCustomer.complemento ?? undefined,
                   bairro: linkedCustomer.bairro ?? undefined,
                   cep: linkedCustomer.cep ?? undefined,
                   cidade: linkedCustomer.cidade ?? undefined,
                   estado: linkedCustomer.estado ?? undefined,
-                  tipo_fj: linkedCustomer.tipo_fj ?? undefined,
-                  dt_nasc: linkedCustomer.dt_nasc ?? undefined,
-                  tel: linkedCustomer.tel ?? undefined,
-                  celular: linkedCustomer.celular ?? undefined,
-                  cpf_cnpj: linkedCustomer.cpf_cnpj ?? undefined,
-                  insc_identidade: linkedCustomer.insc_identidade ?? undefined,
-                  sexo: linkedCustomer.sexo ?? undefined,
-                  dt_cadastro: linkedCustomer.dt_cadastro ?? undefined,
+                  celular: linkedCustomer.telefone_celular ?? undefined,
+                  cpf_cnpj: linkedCustomer.cpf ?? undefined,
+                  dt_cadastro: linkedCustomer.data_criacao_usuario ?? undefined,
                   email: linkedCustomer.email ?? undefined,
                 }
               : undefined),
@@ -719,26 +710,17 @@ export class SalesService {
               ticket.customer ??
               (linkedCustomer
                 ? {
-                    acao_cli: linkedCustomer.acao_cli,
-                    razao_social: linkedCustomer.razao_social,
-                    tipo_endereco: linkedCustomer.tipo_endereco,
+                    razao_social: linkedCustomer.nome_completo,
                     endereco: linkedCustomer.endereco,
-                    numero: linkedCustomer.numero,
-                    complemento: linkedCustomer.complemento,
                     bairro: linkedCustomer.bairro,
                     cep: linkedCustomer.cep,
                     cidade: linkedCustomer.cidade,
                     estado: linkedCustomer.estado,
-                    tipo_fj: linkedCustomer.tipo_fj,
-                    dt_nasc:
-                      this.parseDate(linkedCustomer.dt_nasc) || undefined,
-                    tel: linkedCustomer.tel,
-                    celular: linkedCustomer.celular,
-                    cpf_cnpj: linkedCustomer.cpf_cnpj,
-                    insc_identidade: linkedCustomer.insc_identidade,
-                    sexo: linkedCustomer.sexo,
+                    celular: linkedCustomer.telefone_celular,
+                    cpf_cnpj: linkedCustomer.cpf,
                     dt_cadastro:
-                      this.parseDate(linkedCustomer.dt_cadastro) || undefined,
+                      this.parseDate(linkedCustomer.data_criacao_usuario) ||
+                      undefined,
                     email: linkedCustomer.email,
                   }
                 : undefined);
@@ -772,7 +754,7 @@ export class SalesService {
               emissor: ticket.emissor,
               promotor: ticket.promotor,
               gerente: ticket.gerente,
-              cliente: ticket.cliente ?? linkedCustomer?.razao_social,
+              cliente: ticket.cliente ?? linkedCustomer?.nome_completo,
               ccustos_cliente: ticket.ccustos_cliente,
               numero_requisicao: ticket.numero_requisicao,
               data_requisicao: this.parseDate(ticket.data_requisicao),

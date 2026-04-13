@@ -33,31 +33,23 @@ model User {
 }
 
 model Customer {
-  id              String   @id @default(cuid())
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
-  acao_cli        String?
-  razao_social    String
-  tipo_endereco   String?
-  endereco        String?
-  numero          String?
-  complemento     String?
-  bairro          String?
-  cep             String?
-  cidade          String?
-  estado          String?
-  tipo_fj         String?
-  dt_nasc         DateTime?
-  tel             String?
-  celular         String?
-  cpf_cnpj        String?  @unique
-  insc_identidade String?
-  sexo            String?
-  dt_cadastro     DateTime?
-  email           String?  @unique
-  tickets         WintourTicket[]
+  id                  String   @id @default(cuid())
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  nome_completo       String
+  cpf                 String   @unique
+  email               String
+  telefone_celular    String
+  endereco            String
+  cep                 String
+  logradouro          String
+  bairro              String
+  cidade              String
+  estado              String
+  data_criacao_usuario DateTime @default(now())
+  tickets             WintourTicket[]
 
-  @@map("customers")
+  @@map("clientes")
 }
 
 model WintourHeader {

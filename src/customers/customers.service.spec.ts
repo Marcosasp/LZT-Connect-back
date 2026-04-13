@@ -33,18 +33,34 @@ describe('CustomersService', () => {
   it('should create a customer', async () => {
     mockPrismaService.customer.create.mockResolvedValue({
       id: 'customer-1',
-      razao_social: 'LZT Corp',
+      nome_completo: 'Maria Silva',
     });
 
     const result = await service.create({
-      razao_social: 'LZT Corp',
+      nome_completo: 'Maria Silva',
+      cpf: '529.982.247-25',
       email: 'contato@lzt.com',
+      telefone_celular: '(11) 99999-0000',
+      endereco: 'Rua Augusta, 123',
+      cep: '01305-000',
+      logradouro: 'Rua Augusta',
+      bairro: 'Consolacao',
+      cidade: 'Sao Paulo',
+      estado: 'sp',
     });
 
     expect(mockPrismaService.customer.create).toHaveBeenCalledWith({
       data: {
-        razao_social: 'LZT Corp',
+        nome_completo: 'Maria Silva',
+        cpf: '52998224725',
         email: 'contato@lzt.com',
+        telefone_celular: '11999990000',
+        endereco: 'Rua Augusta, 123',
+        cep: '01305000',
+        logradouro: 'Rua Augusta',
+        bairro: 'Consolacao',
+        cidade: 'Sao Paulo',
+        estado: 'SP',
       },
     });
     expect(result.id).toBe('customer-1');
@@ -60,22 +76,30 @@ describe('CustomersService', () => {
 
     await expect(
       service.create({
-        razao_social: 'LZT Corp',
-        cpf_cnpj: '00.000.000/0001-91',
+        nome_completo: 'Maria Silva',
+        cpf: '529.982.247-25',
+        email: 'maria@lzt.com',
+        telefone_celular: '(11) 99999-0000',
+        endereco: 'Rua Augusta, 123',
+        cep: '01305-000',
+        logradouro: 'Rua Augusta',
+        bairro: 'Consolacao',
+        cidade: 'Sao Paulo',
+        estado: 'SP',
       }),
     ).rejects.toThrow(ConflictException);
   });
 
   it('should list customers ordered by created_at desc', async () => {
     mockPrismaService.customer.findMany.mockResolvedValue([
-      { id: 'customer-1', razao_social: 'LZT Corp' },
+      { id: 'customer-1', nome_completo: 'Maria Silva' },
     ]);
 
     const result = await service.findAll();
 
     expect(mockPrismaService.customer.findMany).toHaveBeenCalledWith({
       orderBy: {
-        created_at: 'desc',
+        data_criacao_usuario: 'desc',
       },
     });
     expect(result).toHaveLength(1);
