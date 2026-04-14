@@ -57,7 +57,7 @@ model Customer {
   email           String?  @unique
   tickets         WintourTicket[]
 
-  @@map("customers")
+  @@map("clientes")
 }
 
 model WintourHeader {

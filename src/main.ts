@@ -13,7 +13,13 @@ import type {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true, // Ignora campos que não estão no DTO
+      forbidNonWhitelisted: true, // Retorna erro se enviarem campos extras
+    }),
+  );
   // Validation
   app.useGlobalPipes(new ValidationPipe({ transform: true }));
 
@@ -60,6 +66,6 @@ async function bootstrap() {
     });
   }
 
-  await app.listen(process.env.PORT || nestConfig.port || 3000,'0.0.0.0');
+  await app.listen(process.env.PORT || nestConfig.port || 3000, '0.0.0.0');
 }
 bootstrap();

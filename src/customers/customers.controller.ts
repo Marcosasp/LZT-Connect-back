@@ -1,5 +1,19 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  ClassSerializerInterceptor,
+  Controller,
+  Get,
+  Post,
+  SerializeOptions,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateCustomerInput } from './dto/create-customer.input';
 import { Customer } from './entities/customer.entity';
@@ -9,6 +23,8 @@ import { CustomersService } from './customers.service';
 @ApiBearerAuth()
 @Controller('customers')
 @UseGuards(JwtAuthGuard)
+@UseInterceptors(ClassSerializerInterceptor)
+@SerializeOptions({ type: Customer })
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
