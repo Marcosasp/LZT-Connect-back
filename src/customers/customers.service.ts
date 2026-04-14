@@ -64,8 +64,6 @@ export class CustomersService {
   }
 
   async update(id: string, data: UpdateCustomerInput) {
-    await this.findOneOrFail(id);
-
     const normalized: UpdateCustomerInput = {
       ...data,
       ...(data.nome_completo !== undefined && {
@@ -103,14 +101,31 @@ export class CustomersService {
         throw new ConflictException('Cliente com CPF ja cadastrado.');
       }
 
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new NotFoundException(`Cliente com id "${id}" não encontrado.`);
+      }
+
       throw error;
     }
   }
 
   async remove(id: string) {
-    await this.findOneOrFail(id);
-    await this.prisma.customer.delete({ where: { id } });
-    return { message: 'Cliente removido com sucesso.' };
+    try {
+      await this.prisma.customer.delete({ where: { id } });
+      return { message: 'Cliente removido com sucesso.' };
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new NotFoundException(`Cliente com id "${id}" não encontrado.`);
+      }
+
+      throw error;
+    }
   }
 
   async search(filters: FilterCustomerDto) {
@@ -141,11 +156,4 @@ export class CustomersService {
     return { data, total, page, limit };
   }
 
-  private async findOneOrFail(id: string) {
-    const customer = await this.prisma.customer.findUnique({ where: { id } });
-    if (!customer) {
-      throw new NotFoundException(`Cliente com id "${id}" não encontrado.`);
-    }
-    return customer;
-  }
 }

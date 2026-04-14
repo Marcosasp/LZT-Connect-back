@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from 'nestjs-prisma';
 import { Prisma } from '@prisma/client';
@@ -13,6 +13,8 @@ describe('CustomersService', () => {
       create: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
     },
   };
 
@@ -141,6 +143,64 @@ describe('CustomersService', () => {
       data,
       meta: { total: 1, page: 1, lastPage: 1 },
     });
+  });
+
+  it('should update customer by id with normalized fields', async () => {
+    const updated = { id: 'customer-1', nome_completo: 'Maria Silva' };
+    mockPrismaService.customer.update.mockResolvedValue(updated);
+
+    const result = await service.update('customer-1', {
+      nome_completo: '  Maria Silva  ',
+      cpf: '529.982.247-25',
+      email: '  MARIA@LZT.COM ',
+      estado: 'sp',
+    });
+
+    expect(mockPrismaService.customer.update).toHaveBeenCalledWith({
+      where: { id: 'customer-1' },
+      data: {
+        nome_completo: 'Maria Silva',
+        cpf: '52998224725',
+        email: 'maria@lzt.com',
+        estado: 'SP',
+      },
+    });
+    expect(result).toEqual(updated);
+  });
+
+  it('should throw NotFoundException when updating non-existing customer', async () => {
+    mockPrismaService.customer.update.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('not found', {
+        code: 'P2025',
+        clientVersion: 'test',
+      }),
+    );
+
+    await expect(service.update('missing-id', { nome_completo: 'Maria' })).rejects.toThrow(
+      NotFoundException,
+    );
+  });
+
+  it('should delete customer by id and return success message', async () => {
+    mockPrismaService.customer.delete.mockResolvedValue({ id: 'customer-1' });
+
+    const result = await service.remove('customer-1');
+
+    expect(mockPrismaService.customer.delete).toHaveBeenCalledWith({
+      where: { id: 'customer-1' },
+    });
+    expect(result).toEqual({ message: 'Cliente removido com sucesso.' });
+  });
+
+  it('should throw NotFoundException when deleting non-existing customer', async () => {
+    mockPrismaService.customer.delete.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('not found', {
+        code: 'P2025',
+        clientVersion: 'test',
+      }),
+    );
+
+    await expect(service.remove('missing-id')).rejects.toThrow(NotFoundException);
   });
 
   it('should search customers with filters and paginated response', async () => {
