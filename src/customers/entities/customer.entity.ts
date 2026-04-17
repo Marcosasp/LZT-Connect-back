@@ -11,59 +11,35 @@ export class Customer {
   updated_at: Date;
 
   @ApiProperty()
-  razao_social: string;
+  nome_completo: string;
 
-  @ApiProperty({ required: false })
-  acao_cli?: string;
+  @ApiProperty()
+  cpf: string;
 
-  @ApiProperty({ required: false })
-  tipo_endereco?: string;
+  @ApiProperty()
+  email: string;
 
-  @ApiProperty({ required: false })
-  endereco?: string;
+  @ApiProperty()
+  telefone_celular: string;
 
-  @ApiProperty({ required: false })
-  numero?: string;
+  @ApiProperty()
+  endereco: string;
 
-  @ApiProperty({ required: false })
-  complemento?: string;
+  @ApiProperty()
+  cep: string;
 
-  @ApiProperty({ required: false })
-  bairro?: string;
+  @ApiProperty()
+  logradouro: string;
 
-  @ApiProperty({ required: false })
-  cep?: string;
+  @ApiProperty()
+  bairro: string;
 
-  @ApiProperty({ required: false })
-  cidade?: string;
+  @ApiProperty()
+  cidade: string;
 
-  @ApiProperty({ required: false })
-  estado?: string;
+  @ApiProperty()
+  estado: string;
 
-  @ApiProperty({ required: false })
-  tipo_fj?: string;
-
-  @ApiProperty({ required: false })
-  dt_nasc?: Date;
-
-  @ApiProperty({ required: false })
-  tel?: string;
-
-  @ApiProperty({ required: false })
-  celular?: string;
-
-  @ApiProperty({ required: false })
-  cpf_cnpj?: string;
-
-  @ApiProperty({ required: false })
-  insc_identidade?: string;
-
-  @ApiProperty({ required: false })
-  sexo?: string;
-
-  @ApiProperty({ required: false })
-  dt_cadastro?: Date;
-
-  @ApiProperty({ required: false })
-  email?: string;
+  @ApiProperty()
+  data_criacao_usuario: Date;
 }
