@@ -125,7 +125,15 @@ describe('CustomersService', () => {
       where: { id: 'customer-1' },
       include: { tickets: true },
     });
-    expect(result).toEqual(customer);
+    expect(result).toEqual({
+      ...customer,
+      nome: customer.nome_completo,
+      nomeCompleto: customer.nome_completo,
+      razao_social: customer.nome_completo,
+      tel: (customer as any).telefone_celular,
+      celular: (customer as any).telefone_celular,
+      cpf_cnpj: (customer as any).cpf,
+    });
   });
 
   it('should throw NotFoundException when customer by id does not exist', async () => {
@@ -137,13 +145,25 @@ describe('CustomersService', () => {
   });
 
   it('should list customers with pagination and return meta object', async () => {
-    const data = [
-      { id: 'customer-1', nome_completo: 'Maria Silva' },
-      { id: 'customer-2', nome_completo: 'Joao Souza' },
+    const rawData = [
+      {
+        id: 'customer-1',
+        nome_completo: 'Maria Silva',
+        telefone_celular: undefined,
+        cpf: undefined,
+        razao_social: undefined,
+      },
+      {
+        id: 'customer-2',
+        nome_completo: 'Joao Souza',
+        telefone_celular: undefined,
+        cpf: undefined,
+        razao_social: undefined,
+      },
     ];
     const total = 22;
 
-    mockPrismaService.customer.findMany.mockResolvedValue(data);
+    mockPrismaService.customer.findMany.mockResolvedValue(rawData);
     mockPrismaService.customer.count.mockResolvedValue(total);
     mockPrismaService.$transaction.mockImplementation(
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
@@ -159,16 +179,32 @@ describe('CustomersService', () => {
     expect(mockPrismaService.customer.count).toHaveBeenCalledTimes(1);
     expect(mockPrismaService.$transaction).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
-      data,
+      data: rawData.map((c) => ({
+        ...c,
+        nome: c.nome_completo,
+        nomeCompleto: c.nome_completo,
+        razao_social: c.nome_completo,
+        tel: c.telefone_celular,
+        celular: c.telefone_celular,
+        cpf_cnpj: c.cpf,
+      })),
       meta: { total: 22, page: 2, lastPage: 3 },
     });
   });
 
   it('should use default page=1 and limit=10 when called without arguments', async () => {
-    const data = [{ id: 'customer-1', nome_completo: 'Maria Silva' }];
+    const rawData = [
+      {
+        id: 'customer-1',
+        nome_completo: 'Maria Silva',
+        telefone_celular: undefined,
+        cpf: undefined,
+        razao_social: undefined,
+      },
+    ];
     const total = 1;
 
-    mockPrismaService.customer.findMany.mockResolvedValue(data);
+    mockPrismaService.customer.findMany.mockResolvedValue(rawData);
     mockPrismaService.customer.count.mockResolvedValue(total);
     mockPrismaService.$transaction.mockImplementation(
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
@@ -182,7 +218,15 @@ describe('CustomersService', () => {
       take: 10,
     });
     expect(result).toEqual({
-      data,
+      data: rawData.map((c) => ({
+        ...c,
+        nome: c.nome_completo,
+        nomeCompleto: c.nome_completo,
+        razao_social: c.nome_completo,
+        tel: c.telefone_celular,
+        celular: c.telefone_celular,
+        cpf_cnpj: c.cpf,
+      })),
       meta: { total: 1, page: 1, lastPage: 1 },
     });
   });
@@ -252,10 +296,18 @@ describe('CustomersService', () => {
   });
 
   it('should search customers with filters and paginated response', async () => {
-    const data = [{ id: 'customer-1', nome_completo: 'Maria Silva' }];
+    const rawData = [
+      {
+        id: 'customer-1',
+        nome_completo: 'Maria Silva',
+        telefone_celular: undefined,
+        cpf: undefined,
+        razao_social: undefined,
+      },
+    ];
     const total = 1;
 
-    mockPrismaService.customer.findMany.mockResolvedValue(data);
+    mockPrismaService.customer.findMany.mockResolvedValue(rawData);
     mockPrismaService.customer.count.mockResolvedValue(total);
     mockPrismaService.$transaction.mockImplementation(
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
@@ -287,14 +339,33 @@ describe('CustomersService', () => {
       },
     });
     expect(mockPrismaService.$transaction).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ data, total, page: 2, limit: 5 });
+    expect(result).toEqual({
+      data: rawData.map((c) => ({
+        ...c,
+        nome: c.nome_completo,
+        nomeCompleto: c.nome_completo,
+        razao_social: c.nome_completo,
+        tel: c.telefone_celular,
+        celular: c.telefone_celular,
+        cpf_cnpj: c.cpf,
+      })),
+      meta: { total: 1, page: 2, lastPage: 1 },
+    });
   });
 
   it('should use default pagination when page and limit are not provided', async () => {
-    const data = [{ id: 'customer-2', nome_completo: 'Joao Souza' }];
+    const rawData = [
+      {
+        id: 'customer-2',
+        nome_completo: 'Joao Souza',
+        telefone_celular: undefined,
+        cpf: undefined,
+        razao_social: undefined,
+      },
+    ];
     const total = 3;
 
-    mockPrismaService.customer.findMany.mockResolvedValue(data);
+    mockPrismaService.customer.findMany.mockResolvedValue(rawData);
     mockPrismaService.customer.count.mockResolvedValue(total);
     mockPrismaService.$transaction.mockImplementation(
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
@@ -317,6 +388,17 @@ describe('CustomersService', () => {
         nome_completo: { contains: 'joao', mode: 'insensitive' },
       },
     });
-    expect(result).toEqual({ data, total, page: 1, limit: 10 });
+    expect(result).toEqual({
+      data: rawData.map((c) => ({
+        ...c,
+        nome: c.nome_completo,
+        nomeCompleto: c.nome_completo,
+        razao_social: c.nome_completo,
+        tel: c.telefone_celular,
+        celular: c.telefone_celular,
+        cpf_cnpj: c.cpf,
+      })),
+      meta: { total: 3, page: 1, lastPage: 1 },
+    });
   });
 });

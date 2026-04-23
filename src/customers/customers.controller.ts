@@ -42,10 +42,7 @@ export class CustomersController {
   @Patch(':id')
   @ApiOperation({ summary: 'Atualizar cliente' })
   @ApiResponse({ status: 200, type: Customer })
-  update(
-    @Param('id') id: string,
-    @Body() data: UpdateCustomerInput,
-  ) {
+  update(@Param('id') id: string, @Body() data: UpdateCustomerInput) {
     return this.customersService.update(id, data);
   }
 

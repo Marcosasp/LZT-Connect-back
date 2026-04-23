@@ -50,13 +50,6 @@ export class CustomersService {
   ): Prisma.CustomerCreateInput {
     const nomeCompletoValue =
       data.nome ?? data.nomeCompleto ?? data.nome_completo ?? data.razao_social;
-    console.log('[DEBUG] Valores de nome:', {
-      nome: data.nome,
-      nomeCompleto: data.nomeCompleto,
-      nome_completo: data.nome_completo,
-      razao_social: data.razao_social,
-      nomeCompletoValue,
-    });
     const nomeCompleto = nomeCompletoValue?.trim() ?? '';
     const cpf = (data.cpf_cnpj ?? data.cpfCnpj ?? data.cpf)?.trim() ?? '';
     const email =
@@ -153,10 +146,6 @@ export class CustomersService {
   }
 
   async create(data: CreateCustomerInput) {
-    console.log(
-      '[DEBUG] Dados recebidos no create:',
-      JSON.stringify(data, null, 2),
-    );
     try {
       return await this.prisma.customer.create({
         data: this.normalizeCreateInput(data),
