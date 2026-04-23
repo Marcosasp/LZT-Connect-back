@@ -5,18 +5,11 @@ function onlyDigits(value?: string | null): string {
   return (value ?? '').replace(/\D/g, '');
 }
 
-function formatCpfCnpj(value?: string | null): string | undefined {
+function formatCpf(value?: string | null): string | undefined {
   const digits = onlyDigits(value);
 
   if (digits.length === 11) {
     return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
-  }
-
-  if (digits.length === 14) {
-    return digits.replace(
-      /(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/,
-      '$1.$2.$3/$4-$5',
-    );
   }
 
   return value ?? undefined;
@@ -61,80 +54,52 @@ export class Customer {
 
   @ApiProperty()
   @Expose()
-  razao_social: string;
+  nome_completo: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
-  acao_cli?: string;
+  @Transform(({ value }) => formatCpf(value), { toPlainOnly: true })
+  cpf: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
-  tipo_endereco?: string;
+  email: string;
 
-  @ApiProperty({ required: false })
-  @Expose()
-  endereco?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  numero?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  complemento?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  bairro?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  @Transform(({ value }) => formatCep(value), { toPlainOnly: true })
-  cep?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  cidade?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  estado?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  tipo_fj?: string;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  dt_nasc?: Date;
-
-  @ApiProperty({ required: false })
-  @Expose()
-  tel?: string;
-
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
   @Transform(({ value }) => formatCelular(value), { toPlainOnly: true })
-  celular?: string;
+  telefone_celular: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
-  @Transform(({ value }) => formatCpfCnpj(value), { toPlainOnly: true })
-  cpf_cnpj?: string;
+  endereco: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
-  insc_identidade?: string;
+  @Transform(({ value }) => formatCep(value), { toPlainOnly: true })
+  cep: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
-  sexo?: string;
+  logradouro: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
-  dt_cadastro?: Date;
+  bairro: string;
 
-  @ApiProperty({ required: false })
+  @ApiProperty()
   @Expose()
-  email?: string;
+  cidade: string;
+
+  @ApiProperty()
+  @Expose()
+  estado: string;
+
+  @ApiProperty()
+  @Expose()
+  data_criacao_usuario: Date;
+
+  @ApiProperty({ required: false, type: [Object] })
+  @Expose()
+  tickets?: Record<string, unknown>[];
 }

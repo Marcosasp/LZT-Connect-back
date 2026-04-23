@@ -24,25 +24,17 @@ Table clientes {
   id String [pk]
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
-  acao_cli String
-  razao_social String [not null]
-  tipo_endereco String
-  endereco String
-  numero String
-  complemento String
-  bairro String
-  cep String
-  cidade String
-  estado String
-  tipo_fj String
-  dt_nasc DateTime
-  tel String
-  celular String
-  cpf_cnpj String [unique]
-  insc_identidade String
-  sexo String
-  dt_cadastro DateTime
-  email String [unique]
+  nome_completo String [not null]
+  cpf String [unique, not null]
+  email String [not null]
+  telefone_celular String [not null]
+  endereco String [not null]
+  cep String [not null]
+  logradouro String [not null]
+  bairro String [not null]
+  cidade String [not null]
+  estado String [not null]
+  data_criacao_usuario DateTime [default: `now()`, not null]
   tickets wintour_tickets [not null]
 }
 
