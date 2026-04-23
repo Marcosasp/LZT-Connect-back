@@ -22,6 +22,7 @@ Table users {
 
 Table clientes {
   id String [pk]
+  razao_social String
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   nome_completo String [not null]

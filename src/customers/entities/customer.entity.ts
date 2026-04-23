@@ -99,6 +99,26 @@ export class Customer {
   @Expose()
   data_criacao_usuario: Date;
 
+  @ApiProperty({ required: false })
+  @Expose()
+  razao_social?: string;
+
+  @ApiProperty({ required: false })
+  @Expose()
+  nome?: string;
+
+  @ApiProperty({ required: false })
+  @Expose()
+  tel?: string;
+
+  @ApiProperty({ required: false })
+  @Expose()
+  celular?: string;
+
+  @ApiProperty({ required: false })
+  @Expose()
+  cpf_cnpj?: string;
+
   @ApiProperty({ required: false, type: [Object] })
   @Expose()
   tickets?: Record<string, unknown>[];

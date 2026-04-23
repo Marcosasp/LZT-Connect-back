@@ -21,52 +21,142 @@ export class CustomersService {
     return value.replace(/\D/g, '');
   }
 
+  private mapCustomerResponse<
+    T extends {
+      nome_completo: string;
+      telefone_celular: string;
+      cpf: string;
+      razao_social?: string | null;
+    },
+  >(customer: T) {
+    const razaoSocial =
+      customer.razao_social && customer.razao_social.trim() !== ''
+        ? customer.razao_social
+        : customer.nome_completo;
+
+    return {
+      ...customer,
+      razao_social: razaoSocial,
+      nome: customer.nome_completo,
+      nomeCompleto: customer.nome_completo,
+      tel: customer.telefone_celular,
+      celular: customer.telefone_celular,
+      cpf_cnpj: customer.cpf,
+    };
+  }
+
   private normalizeCreateInput(
     data: CreateCustomerInput,
   ): Prisma.CustomerCreateInput {
+    const nomeCompletoValue =
+      data.nome ?? data.nomeCompleto ?? data.nome_completo ?? data.razao_social;
+    console.log('[DEBUG] Valores de nome:', {
+      nome: data.nome,
+      nomeCompleto: data.nomeCompleto,
+      nome_completo: data.nome_completo,
+      razao_social: data.razao_social,
+      nomeCompletoValue,
+    });
+    const nomeCompleto = nomeCompletoValue?.trim() ?? '';
+    const cpf = (data.cpf_cnpj ?? data.cpfCnpj ?? data.cpf)?.trim() ?? '';
+    const email =
+      (data.email ?? data.emailAddress ?? data.e_mail)?.trim().toLowerCase() ??
+      '';
+    const telefoneCelular =
+      (
+        data.tel ??
+        data.celular ??
+        data.telefoneCelular ??
+        data.telefone_celular
+      )?.trim() ?? '';
+    const endereco = (data.endereco ?? data.enderecoCompleto)?.trim() ?? '';
+    const cep = (data.cep ?? data.codigoPostal)?.trim() ?? '';
+    const logradouro = (data.logadouro ?? data.logradouro)?.trim() ?? '';
+    const bairro = (data.bairro ?? data.district)?.trim() ?? '';
+    const cidade = (data.cidade ?? data.municipio ?? data.city)?.trim() ?? '';
+    const estado =
+      (data.estado ?? data.uf ?? data.state)?.trim().toUpperCase() ?? '';
+    const razaoSocial =
+      (data.razao_social ?? data.razaoSocial)?.trim() === nomeCompleto
+        ? undefined
+        : (data.razao_social ?? data.razaoSocial)?.trim();
+
     return {
-      nome_completo: data.nome_completo.trim(),
-      cpf: this.onlyDigits(data.cpf) ?? data.cpf,
-      email: data.email.trim().toLowerCase(),
-      telefone_celular:
-        this.onlyDigits(data.telefone_celular) ?? data.telefone_celular,
-      endereco: data.endereco.trim(),
-      cep: this.onlyDigits(data.cep) ?? data.cep,
-      logradouro: data.logradouro.trim(),
-      bairro: data.bairro.trim(),
-      cidade: data.cidade.trim(),
-      estado: data.estado.trim().toUpperCase(),
+      nome_completo: nomeCompleto,
+      razao_social: razaoSocial,
+      cpf: this.onlyDigits(cpf) ?? cpf,
+      email,
+      telefone_celular: this.onlyDigits(telefoneCelular) ?? telefoneCelular,
+      endereco,
+      cep: this.onlyDigits(cep) ?? cep,
+      logradouro,
+      bairro,
+      cidade,
+      estado,
     };
   }
 
   private normalizeUpdateInput(
     data: UpdateCustomerInput,
   ): Prisma.CustomerUpdateInput {
+    const nomeCompletoValue =
+      data.nome ?? data.nomeCompleto ?? data.nome_completo ?? data.razao_social;
+    const cpfValue = data.cpf_cnpj ?? data.cpfCnpj ?? data.cpf;
+    const emailValue = data.email ?? data.emailAddress ?? data.e_mail;
+    const telefoneCelularValue =
+      data.tel ?? data.celular ?? data.telefoneCelular ?? data.telefone_celular;
+    const enderecoValue = data.endereco ?? data.enderecoCompleto;
+    const cepValue = data.cep ?? data.codigoPostal;
+    const logradouroValue = data.logadouro ?? data.logradouro;
+    const bairroValue = data.bairro ?? data.district;
+    const cidadeValue = data.cidade ?? data.municipio ?? data.city;
+    const estadoValue = data.estado ?? data.uf ?? data.state;
+    const razaoSocialValue = data.razao_social ?? data.razaoSocial;
+
     return {
-      ...(data.nome_completo !== undefined && {
-        nome_completo: data.nome_completo.trim(),
+      ...(nomeCompletoValue !== undefined && {
+        nome_completo: nomeCompletoValue.trim(),
       }),
-      ...(data.cpf !== undefined && { cpf: this.onlyDigits(data.cpf) }),
-      ...(data.email !== undefined && {
-        email: data.email.trim().toLowerCase(),
+      ...(razaoSocialValue !== undefined &&
+        razaoSocialValue !== nomeCompletoValue?.trim() && {
+          razao_social: razaoSocialValue.trim(),
+        }),
+      ...(cpfValue !== undefined && {
+        cpf: this.onlyDigits(cpfValue) ?? cpfValue,
       }),
-      ...(data.telefone_celular !== undefined && {
-        telefone_celular: this.onlyDigits(data.telefone_celular),
+      ...(emailValue !== undefined && {
+        email: emailValue.trim().toLowerCase(),
       }),
-      ...(data.endereco !== undefined && { endereco: data.endereco.trim() }),
-      ...(data.cep !== undefined && { cep: this.onlyDigits(data.cep) }),
-      ...(data.logradouro !== undefined && {
-        logradouro: data.logradouro.trim(),
+      ...(telefoneCelularValue !== undefined && {
+        telefone_celular:
+          this.onlyDigits(telefoneCelularValue) ?? telefoneCelularValue,
       }),
-      ...(data.bairro !== undefined && { bairro: data.bairro.trim() }),
-      ...(data.cidade !== undefined && { cidade: data.cidade.trim() }),
-      ...(data.estado !== undefined && {
-        estado: data.estado.trim().toUpperCase(),
+      ...(enderecoValue !== undefined && {
+        endereco: enderecoValue.trim(),
+      }),
+      ...(cepValue !== undefined && {
+        cep: this.onlyDigits(cepValue) ?? cepValue,
+      }),
+      ...(logradouroValue !== undefined && {
+        logradouro: logradouroValue.trim(),
+      }),
+      ...(bairroValue !== undefined && {
+        bairro: bairroValue.trim(),
+      }),
+      ...(cidadeValue !== undefined && {
+        cidade: cidadeValue.trim(),
+      }),
+      ...(estadoValue !== undefined && {
+        estado: estadoValue.trim().toUpperCase(),
       }),
     };
   }
 
   async create(data: CreateCustomerInput) {
+    console.log(
+      '[DEBUG] Dados recebidos no create:',
+      JSON.stringify(data, null, 2),
+    );
     try {
       return await this.prisma.customer.create({
         data: this.normalizeCreateInput(data),
@@ -86,7 +176,7 @@ export class CustomersService {
   async findAll(page = 1, limit = 10) {
     const skip = (page - 1) * limit;
 
-    const [data, total] = await this.prisma.$transaction([
+    const [customers, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
         orderBy: { data_criacao_usuario: 'desc' },
         skip,
@@ -94,6 +184,10 @@ export class CustomersService {
       }),
       this.prisma.customer.count(),
     ]);
+
+    const data = customers.map((customer) =>
+      this.mapCustomerResponse(customer),
+    );
 
     const lastPage = Math.ceil(total / limit);
 
@@ -112,7 +206,7 @@ export class CustomersService {
       throw new NotFoundException(`Cliente com id "${id}" nao encontrado.`);
     }
 
-    return customer;
+    return this.mapCustomerResponse(customer);
   }
 
   async update(id: string, data: UpdateCustomerInput) {
@@ -171,7 +265,7 @@ export class CustomersService {
 
     const skip = (page - 1) * limit;
 
-    const [data, total] = await this.prisma.$transaction([
+    const [customers, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
         where,
         orderBy: { data_criacao_usuario: 'desc' },
@@ -181,6 +275,11 @@ export class CustomersService {
       this.prisma.customer.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    const data = customers.map((customer) =>
+      this.mapCustomerResponse(customer),
+    );
+
+    const lastPage = Math.ceil(total / limit);
+    return { data, meta: { total, page, lastPage } };
   }
 }
