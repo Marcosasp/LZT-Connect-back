@@ -36,8 +36,6 @@ export class UpdateUserInput {
   })
   birthday?: string;
 
-
-
   @ApiProperty({ required: false })
   @IsOptional()
   street?: string;
@@ -59,4 +57,3 @@ export class UpdateUserInput {
   @IsEnum(Role, { message: 'O cargo deve ser um valor válido (ADMIN ou USER)' })
   role?: Role;
 }
-

@@ -45,14 +45,17 @@ export class UsersService {
   }
 
   async createManagedUser(data: SignupInput) {
-    const hashedPassword = await this.passwordService.hashPassword(data.password);
+    const hashedPassword = await this.passwordService.hashPassword(
+      data.password,
+    );
 
     const user = await this.createUser({
       ...data,
       password: hashedPassword,
     });
 
-    const { password, ...result } = user;
+    const result = { ...user };
+    delete result.password;
     return result;
   }
 
@@ -70,8 +73,6 @@ export class UsersService {
     });
   }
 
-
-
   async changePassword(
     userId: string,
     userPassword: string,
@@ -82,8 +83,10 @@ export class UsersService {
       userPassword,
     );
 
-    if(changePassword.old_password === changePassword.new_password){
-      throw new BadRequestException('A nova senha deve ser diferente da senha antiga');
+    if (changePassword.old_password === changePassword.new_password) {
+      throw new BadRequestException(
+        'A nova senha deve ser diferente da senha antiga',
+      );
     }
 
     if (!passwordValid) {
@@ -109,7 +112,10 @@ export class UsersService {
         where: { id: userId },
       });
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2025'
+      ) {
         throw new NotFoundException('Usuário não encontrado');
       }
       throw e;

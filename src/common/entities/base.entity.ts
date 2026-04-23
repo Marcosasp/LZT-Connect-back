@@ -34,4 +34,3 @@ export abstract class BaseEntity {
   })
   updated_at: Date;
 }
-

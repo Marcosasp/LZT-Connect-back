@@ -3,12 +3,16 @@ import { Transform } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class FilterCustomerDto {
-  @ApiPropertyOptional({ description: 'Filtro parcial por nome (case-insensitive)' })
+  @ApiPropertyOptional({
+    description: 'Filtro parcial por nome (case-insensitive)',
+  })
   @IsOptional()
   @IsString()
   nome?: string;
 
-  @ApiPropertyOptional({ description: 'Filtro parcial por e-mail (case-insensitive)' })
+  @ApiPropertyOptional({
+    description: 'Filtro parcial por e-mail (case-insensitive)',
+  })
   @IsOptional()
   @IsString()
   email?: string;
@@ -28,7 +32,10 @@ export class FilterCustomerDto {
   @Min(1)
   page?: number = 1;
 
-  @ApiPropertyOptional({ description: 'Registros por página (padrão: 10)', default: 10 })
+  @ApiPropertyOptional({
+    description: 'Registros por página (padrão: 10)',
+    default: 10,
+  })
   @IsOptional()
   @Transform(({ value }) => parseInt(value, 10))
   @IsInt()

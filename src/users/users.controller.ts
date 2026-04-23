@@ -7,7 +7,12 @@ import {
   UseGuards,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { UserEntity } from '../common/decorators/user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -69,7 +74,7 @@ export class UsersController {
   ) {
     await this.usersService.updateUser(user.id, newUserData);
     return {
-      message: "Usuário alterado com Sucesso!"
+      message: 'Usuário alterado com Sucesso!',
     };
   }
 
@@ -86,7 +91,7 @@ export class UsersController {
       changePassword,
     );
     return {
-      message: "Senha alterada com Sucesso!"
+      message: 'Senha alterada com Sucesso!',
     };
   }
 
@@ -100,7 +105,7 @@ export class UsersController {
       updateRoleData.role,
     );
     return {
-      message: "Cargo alterado com Sucesso!"
+      message: 'Cargo alterado com Sucesso!',
     };
   }
 }

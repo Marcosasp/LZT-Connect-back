@@ -24,7 +24,6 @@ describe('UsersController (e2e)', () => {
     zip_code: '01234-567',
   };
 
-
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -38,14 +37,16 @@ describe('UsersController (e2e)', () => {
 
     // Signup and Login to get token
     await request(app.getHttpServer()).post('/auth/signup').send(user);
-    
+
     // Manual grant ADMIN role to test user
     await prisma.user.update({
       where: { email: user.email.toLowerCase() },
       data: { role: Role.ADMIN },
     });
 
-    const loginRes = await request(app.getHttpServer()).post('/auth/login').send(user);
+    const loginRes = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send(user);
     accessToken = loginRes.body.access_token;
   });
 
@@ -65,9 +66,7 @@ describe('UsersController (e2e)', () => {
   });
 
   it('/users/me (GET) - Unauthorized', () => {
-    return request(app.getHttpServer())
-      .get('/users/me')
-      .expect(401);
+    return request(app.getHttpServer()).get('/users/me').expect(401);
   });
 
   it('/users (PATCH) - Update Profile', () => {
@@ -90,10 +89,11 @@ describe('UsersController (e2e)', () => {
       })
       .expect(400)
       .expect((res) => {
-        expect(res.body.message).toContain('O cargo deve ser um valor válido (ADMIN ou USER)');
+        expect(res.body.message).toContain(
+          'O cargo deve ser um valor válido (ADMIN ou USER)',
+        );
       });
   });
-
 
   it('/users/role (PATCH) - Error - Invalid Role (e.g. AGENT)', () => {
     return request(app.getHttpServer())
@@ -105,7 +105,9 @@ describe('UsersController (e2e)', () => {
       })
       .expect(400)
       .expect((res) => {
-        expect(res.body.message).toContain('O cargo deve ser um valor válido (ADMIN ou USER)');
+        expect(res.body.message).toContain(
+          'O cargo deve ser um valor válido (ADMIN ou USER)',
+        );
       });
   });
 
@@ -154,9 +156,9 @@ describe('UsersController (e2e)', () => {
       })
       .expect(403)
       .expect((res) => {
-        expect(res.body.message).toBe('Você não tem acesso para realizar essa ação');
+        expect(res.body.message).toBe(
+          'Você não tem acesso para realizar essa ação',
+        );
       });
   });
 });
-
-

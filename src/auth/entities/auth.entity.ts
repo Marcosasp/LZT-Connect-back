@@ -6,4 +6,3 @@ export class Auth extends Token {
   @ApiProperty({ type: () => User })
   user: User;
 }
-

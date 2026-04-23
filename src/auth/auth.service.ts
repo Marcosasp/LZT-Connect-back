@@ -1,7 +1,4 @@
-import {
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { PasswordService } from './password.service';
@@ -37,14 +34,11 @@ export class AuthService {
     });
   }
 
-
   async login(email: string, password: string): Promise<Token> {
     const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (!user) {
-      throw new UnauthorizedException(
-        'Usuário ou senha não está cadastrado',
-      );
+      throw new UnauthorizedException('Usuário ou senha não está cadastrado');
     }
 
     const passwordValid = await this.passwordService.validatePassword(
@@ -60,7 +54,6 @@ export class AuthService {
       user_id: user.id,
     });
   }
-
 
   validateUser(user_id: string): Promise<User> {
     return this.prisma.user.findUnique({ where: { id: user_id } });
@@ -104,4 +97,3 @@ export class AuthService {
     }
   }
 }
-

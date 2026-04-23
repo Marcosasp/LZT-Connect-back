@@ -106,7 +106,7 @@ export class SalesService {
       // Handle DD/MM/YYYY
       const dmvMatch = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
       if (dmvMatch) {
-        const [_, day, month, year] = dmvMatch;
+        const [, day, month, year] = dmvMatch;
         return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
       }
 

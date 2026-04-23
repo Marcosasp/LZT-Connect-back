@@ -489,4 +489,3 @@ export class WintourImportResponse {
   @ApiProperty({ type: () => WintourIntegrationResult })
   integracao: WintourIntegrationResult;
 }
-

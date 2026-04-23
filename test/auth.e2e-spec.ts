@@ -21,7 +21,6 @@ describe('AuthController (e2e)', () => {
     zip_code: '01234-567',
   };
 
-
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -94,5 +93,4 @@ describe('AuthController (e2e)', () => {
         expect(res.body.message).toBe('Senha incorreta');
       });
   });
-
 });

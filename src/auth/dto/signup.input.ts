@@ -29,18 +29,19 @@ export class SignupInput {
   @IsString({ message: 'O sobrenome deve ser uma texto' })
   lastname: string;
 
-  @ApiProperty({ example: '20/01/1990', description: 'Data no formato DD/MM/YYYY' })
+  @ApiProperty({
+    example: '20/01/1990',
+    description: 'Data no formato DD/MM/YYYY',
+  })
   @IsNotEmpty({ message: 'A data de nascimento é obrigatória' })
   @Matches(/^(0[1-9]|[12][0-9]|3[01])\/(0[1-9]|1[0-2])\/\d{4}$/, {
     message: 'A data de nascimento deve estar no formato DD/MM/YYYY',
   })
   birthday: string;
 
-
   @ApiProperty()
   @IsNotEmpty({ message: 'O telefone é obrigatório' })
   phone: string;
-
 
   @ApiProperty()
   @IsNotEmpty({ message: 'A rua é obrigatória' })
@@ -58,4 +59,3 @@ export class SignupInput {
   @IsNotEmpty({ message: 'O CEP é obrigatório' })
   zip_code: string;
 }
-

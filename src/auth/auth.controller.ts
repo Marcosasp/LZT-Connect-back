@@ -22,7 +22,6 @@ export class AuthController {
     };
   }
 
-
   @Post('login')
   @HttpCode(200)
   @ApiOperation({ summary: 'Realizar login' })

@@ -29,12 +29,7 @@ import { UsersModule } from '../users/users.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [
-    AuthService,
-    JwtStrategy,
-    JwtAuthGuard,
-    PasswordService,
-  ],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard, PasswordService],
   exports: [JwtAuthGuard],
 })
 export class AuthModule {}

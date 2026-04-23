@@ -19,8 +19,6 @@ describe('AppController (e2e)', () => {
   });
 
   it('/ (GET) - Should fail or 404 since we removed the handler', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(404);
+    return request(app.getHttpServer()).get('/').expect(404);
   });
 });

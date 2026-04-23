@@ -72,9 +72,17 @@ describe('SalesService', () => {
       mockPrismaService.customer.findMany.mockResolvedValue([
         {
           id: 'customer-1',
-          razao_social: 'LZT Corp',
-          acao_cli: 'NEW',
+          nome_completo: 'LZT Corp',
+          cpf: '12345678901',
           email: 'contato@lzt.com',
+          telefone_celular: '11999999999',
+          endereco: 'Rua A, 123',
+          cep: '01310000',
+          logradouro: 'Rua A',
+          bairro: 'Centro',
+          cidade: 'Sao Paulo',
+          estado: 'SP',
+          data_criacao_usuario: new Date('2026-03-20T10:00:00.000Z'),
         },
       ]);
       mockPrismaService.wintourHeader.create.mockResolvedValue({
@@ -141,10 +149,17 @@ describe('SalesService', () => {
         }),
       );
 
-      expect(mockPrismaService.wintourHeader.create.mock.calls[0][0].data.tickets.create[0].cliente).toBe('LZT Corp');
+      expect(
+        mockPrismaService.wintourHeader.create.mock.calls[0][0].data.tickets
+          .create[0].customer_id,
+      ).toBe('customer-1');
+      expect(
+        mockPrismaService.wintourHeader.create.mock.calls[0][0].data.tickets
+          .create[0].cliente,
+      ).toBe('LZT Corp');
       const soapPayload = mockFetch.mock.calls[0][1].body as string;
-      expect(soapPayload).toContain('<aPin>pin-de-teste</aPin>');
-      expect(soapPayload).toContain('<aArquivo>');
+      expect(soapPayload).toContain('<web:aPin>pin-de-teste</web:aPin>');
+      expect(soapPayload).toContain('<web:aArquivo>');
     });
 
     it('should return integration error details when Wintour fails', async () => {
@@ -291,7 +306,11 @@ describe('SalesService', () => {
             },
           ],
         } as any),
-      ).rejects.toThrow(new NotFoundException('Um ou mais usuarios informados nao foram encontrados.'));
+      ).rejects.toThrow(
+        new NotFoundException(
+          'Um ou mais usuarios informados nao foram encontrados.',
+        ),
+      );
 
       expect(mockPrismaService.wintourHeader.create).not.toHaveBeenCalled();
       expect(mockFetch).not.toHaveBeenCalled();

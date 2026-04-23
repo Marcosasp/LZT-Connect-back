@@ -42,7 +42,10 @@ describe('UsersService', () => {
   describe('updateUser', () => {
     it('should update user successfully', async () => {
       const updateData = { firstname: 'New' };
-      mockPrismaService.user.update.mockResolvedValue({ id: '1', ...updateData });
+      mockPrismaService.user.update.mockResolvedValue({
+        id: '1',
+        ...updateData,
+      });
 
       const result = await service.updateUser('1', updateData as any);
 
@@ -90,7 +93,11 @@ describe('UsersService', () => {
       mockPasswordService.hashPassword.mockResolvedValue('new-hashed');
       mockPrismaService.user.update.mockResolvedValue({ id: '1' });
 
-      await service.changePassword('1', 'old-hashed', changePasswordData as any);
+      await service.changePassword(
+        '1',
+        'old-hashed',
+        changePasswordData as any,
+      );
 
       expect(mockPrismaService.user.update).toHaveBeenCalledWith({
         data: { password: 'new-hashed' },
@@ -102,14 +109,19 @@ describe('UsersService', () => {
       mockPasswordService.validatePassword.mockResolvedValue(false);
 
       await expect(
-        service.changePassword('1', 'old-hashed', { old_password: 'wrong' } as any),
+        service.changePassword('1', 'old-hashed', {
+          old_password: 'wrong',
+        } as any),
       ).rejects.toThrow(BadRequestException);
     });
   });
 
   describe('updateRole', () => {
     it('should update role successfully', async () => {
-      mockPrismaService.user.update.mockResolvedValue({ id: '1', role: Role.ADMIN });
+      mockPrismaService.user.update.mockResolvedValue({
+        id: '1',
+        role: Role.ADMIN,
+      });
 
       const result = await service.updateRole('1', Role.ADMIN);
 

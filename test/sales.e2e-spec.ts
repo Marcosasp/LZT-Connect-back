@@ -25,7 +25,9 @@ describe('SalesController (e2e)', () => {
 
     // Signup and Login to get token
     await request(app.getHttpServer()).post('/auth/signup').send(user);
-    const loginRes = await request(app.getHttpServer()).post('/auth/login').send(user);
+    const loginRes = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send(user);
     accessToken = loginRes.body.access_token;
   });
 

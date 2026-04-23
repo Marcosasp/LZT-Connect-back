@@ -17,7 +17,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    let status =
+    const status =
       exception instanceof HttpException
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
@@ -26,7 +26,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       const exceptionResponse = exception.getResponse();
-      if (typeof exceptionResponse === 'object' && (exceptionResponse as any).message) {
+      if (
+        typeof exceptionResponse === 'object' &&
+        (exceptionResponse as any).message
+      ) {
         const msg = (exceptionResponse as any).message;
         message = Array.isArray(msg) ? msg[0] : msg;
       } else {
@@ -34,12 +37,19 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       message = exception.message;
-      this.logger.error(`Unexpected Error: ${exception.message}`, exception.stack);
+      this.logger.error(
+        `Unexpected Error: ${exception.message}`,
+        exception.stack,
+      );
     }
 
     // Tradução padrão para não autorizado
     if (status === HttpStatus.UNAUTHORIZED) {
-      if (message === 'Unauthorized' || message === 'No auth token' || !message) {
+      if (
+        message === 'Unauthorized' ||
+        message === 'No auth token' ||
+        !message
+      ) {
         message = 'Usuário não autenticado';
       }
     }
@@ -52,5 +62,3 @@ export class HttpExceptionFilter implements ExceptionFilter {
     });
   }
 }
-
-
