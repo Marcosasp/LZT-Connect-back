@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { UsersService } from './users.service';
 import { PrismaService } from 'nestjs-prisma';
 import { PasswordService } from '../auth/password.service';
-import { BadRequestException } from '@nestjs/common';
+import { UnauthorizedException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 
 describe('UsersService', () => {
@@ -12,6 +12,8 @@ describe('UsersService', () => {
 
   const mockPrismaService = {
     user: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
       update: jest.fn(),
     },
   };
@@ -105,14 +107,14 @@ describe('UsersService', () => {
       });
     });
 
-    it('should throw BadRequestException if old password invalid', async () => {
+    it('should throw UnauthorizedException if old password invalid', async () => {
       mockPasswordService.validatePassword.mockResolvedValue(false);
 
       await expect(
         service.changePassword('1', 'old-hashed', {
           old_password: 'wrong',
         } as any),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 

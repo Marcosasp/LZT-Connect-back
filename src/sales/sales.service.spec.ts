@@ -88,6 +88,15 @@ describe('SalesService', () => {
       mockPrismaService.wintourHeader.create.mockResolvedValue({
         id: 'header-1',
         ...importData,
+        tickets: [
+          {
+            customer_id: 'customer-1',
+            customer_record: {
+              id: 'customer-1',
+              nome_completo: 'LZT Corp',
+            },
+          },
+        ],
       });
       mockPrismaService.wintourHeader.update.mockResolvedValue({
         id: 'header-1',
@@ -95,6 +104,15 @@ describe('SalesService', () => {
         integration_status: 'success',
         integration_protocol: 'PROTOCOLO-123',
         integration_raw_response: '<soap:Envelope />',
+        tickets: [
+          {
+            customer_id: 'customer-1',
+            customer_record: {
+              id: 'customer-1',
+              nome_completo: 'LZT Corp',
+            },
+          },
+        ],
       });
       mockFetch.mockResolvedValue({
         ok: true,
@@ -115,6 +133,9 @@ describe('SalesService', () => {
       expect(result.importacao.id).toBe('header-1');
       expect(result.integracao.status).toBe('success');
       expect(result.integracao.protocolo).toBe('PROTOCOLO-123');
+      expect(result.importacao.tickets[0].customer_record.id).toBe(
+        'customer-1',
+      );
       expect(mockPrismaService.user.findMany).toHaveBeenCalledWith({
         where: {
           id: {

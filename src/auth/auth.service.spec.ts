@@ -4,12 +4,8 @@ import { PrismaService } from 'nestjs-prisma';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PasswordService } from './password.service';
-import {
-  BadRequestException,
-  ConflictException,
-  NotFoundException,
-} from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { UsersService } from '../users/users.service';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -17,8 +13,11 @@ describe('AuthService', () => {
   const mockPrismaService = {
     user: {
       findUnique: jest.fn(),
-      create: jest.fn(),
     },
+  };
+
+  const mockUsersService = {
+    createUser: jest.fn(),
   };
 
   const mockPasswordService = {
@@ -41,6 +40,7 @@ describe('AuthService', () => {
       providers: [
         AuthService,
         { provide: PrismaService, useValue: mockPrismaService },
+        { provide: UsersService, useValue: mockUsersService },
         { provide: PasswordService, useValue: mockPasswordService },
         { provide: JwtService, useValue: mockJwtService },
         { provide: ConfigService, useValue: mockConfigService },
@@ -58,7 +58,7 @@ describe('AuthService', () => {
     it('should create a user successfully', async () => {
       const signupData = { email: 'test@test.com', password: 'password' };
       mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
-      mockPrismaService.user.create.mockResolvedValue({
+      mockUsersService.createUser.mockResolvedValue({
         id: '1',
         email: 'test@test.com',
       });
@@ -67,16 +67,17 @@ describe('AuthService', () => {
 
       expect(result).toHaveProperty('access_token');
       expect(result).toHaveProperty('refresh_token');
-      expect(mockPrismaService.user.create).toHaveBeenCalled();
+      expect(mockUsersService.createUser).toHaveBeenCalledWith({
+        ...signupData,
+        password: 'hashed-password',
+      });
     });
 
-    it('should throw ConflictException if prisma throws P2002', async () => {
+    it('should throw ConflictException if usersService throws P2002', async () => {
       const signupData = { email: 'test@test.com', password: 'password' };
-      mockPrismaService.user.create.mockRejectedValue(
-        new Prisma.PrismaClientKnownRequestError('Conflict', {
-          code: 'P2002',
-          clientVersion: 'mock',
-        }),
+      mockPasswordService.hashPassword.mockResolvedValue('hashed-password');
+      mockUsersService.createUser.mockRejectedValue(
+        new ConflictException('O e-mail test@test.com ja esta em uso.'),
       );
 
       await expect(service.createUser(signupData as any)).rejects.toThrow(
@@ -101,15 +102,15 @@ describe('AuthService', () => {
       expect(result).toHaveProperty('refresh_token');
     });
 
-    it('should throw NotFoundException if user not found', async () => {
+    it('should throw UnauthorizedException if user not found', async () => {
       mockPrismaService.user.findUnique.mockResolvedValue(null);
 
       await expect(
         service.login('notfound@test.com', 'password'),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toThrow(UnauthorizedException);
     });
 
-    it('should throw BadRequestException if password invalid', async () => {
+    it('should throw UnauthorizedException if password invalid', async () => {
       const user = {
         id: '1',
         email: 'test@test.com',
@@ -119,7 +120,7 @@ describe('AuthService', () => {
       mockPasswordService.validatePassword.mockResolvedValue(false);
 
       await expect(service.login('test@test.com', 'password')).rejects.toThrow(
-        BadRequestException,
+        UnauthorizedException,
       );
     });
   });
