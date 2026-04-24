@@ -232,7 +232,13 @@ describe('CustomersService', () => {
   });
 
   it('should update customer by id with normalized fields', async () => {
-    const updated = { id: 'customer-1', nome_completo: 'Maria Silva' };
+    const updated = {
+      id: 'customer-1',
+      nome_completo: 'Maria Silva',
+      razao_social: null,
+      telefone_celular: null,
+      cpf: null,
+    };
     mockPrismaService.customer.update.mockResolvedValue(updated);
 
     const result = await service.update('customer-1', {
@@ -255,7 +261,15 @@ describe('CustomersService', () => {
         estado: 'SP',
       },
     });
-    expect(result).toEqual(updated);
+    expect(result).toEqual({
+      ...updated,
+      razao_social: 'Maria Silva',
+      nome: 'Maria Silva',
+      nomeCompleto: 'Maria Silva',
+      tel: null,
+      celular: null,
+      cpf_cnpj: null,
+    });
   });
 
   it('should throw NotFoundException when updating non-existing customer', async () => {
