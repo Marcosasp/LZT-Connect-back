@@ -41,4 +41,35 @@ export class FilterCustomerDto {
   @IsInt()
   @Min(1)
   limit?: number = 10;
+
+  @ApiPropertyOptional({
+    description:
+      'Ordenação dos resultados (asc, desc, mais antigos, mais recentes)',
+    default: 'desc',
+  })
+  @IsOptional()
+  @IsString()
+  order?: string;
+
+  @ApiPropertyOptional({
+    description: 'Alias para order (asc, desc, mais antigos, mais recentes)',
+  })
+  @IsOptional()
+  @IsString()
+  sort?: string;
+
+  @ApiPropertyOptional({ description: 'Alias para order' })
+  @IsOptional()
+  @IsString()
+  direction?: string;
+
+  @ApiPropertyOptional({ description: 'Alias para order' })
+  @IsOptional()
+  @IsString()
+  sorting?: string;
+
+  @ApiPropertyOptional({ description: 'Alias para order' })
+  @IsOptional()
+  @IsString()
+  orderBy?: string;
 }

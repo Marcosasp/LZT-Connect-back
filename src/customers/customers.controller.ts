@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   SerializeOptions,
   UseGuards,
   UseInterceptors,
@@ -19,6 +20,8 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateCustomerInput } from './dto/create-customer.input';
+import { FilterCustomerDto } from './dto/filter-customer.dto';
+import { PaginationDto } from './dto/pagination.dto';
 import { UpdateCustomerInput } from './dto/update-customer.input';
 import { Customer } from './entities/customer.entity';
 import { CustomersService } from './customers.service';
@@ -57,7 +60,34 @@ export class CustomersController {
   @Get()
   @ApiOperation({ summary: 'Listar clientes' })
   @ApiResponse({ status: 200, type: [Customer] })
-  findAll() {
-    return this.customersService.findAll();
+  findAll(@Query() pagination: PaginationDto) {
+    const {
+      page,
+      limit,
+      per_page,
+      order,
+      sort,
+      direction,
+      sorting,
+      dir,
+      orderBy,
+    } = pagination;
+    const rawOrder = order ?? sort ?? direction ?? sorting ?? dir ?? orderBy;
+
+    return this.customersService.findAll(page, per_page ?? limit, rawOrder);
+  }
+
+  @Get('search')
+  @ApiOperation({ summary: 'Buscar clientes com filtros' })
+  @ApiResponse({ status: 200, type: [Customer] })
+  search(@Query() filters: FilterCustomerDto) {
+    return this.customersService.search(
+      filters,
+      filters.order ??
+        filters.sort ??
+        filters.direction ??
+        filters.sorting ??
+        filters.orderBy,
+    );
   }
 }

@@ -13,6 +13,11 @@ import { UpdateCustomerInput } from './dto/update-customer.input';
 export class CustomersService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private getPrismaOrder(order?: string): 'asc' | 'desc' {
+    const v = (order ?? '').toString().toLowerCase();
+    return v.includes('antigo') || v === 'asc' ? 'asc' : 'desc';
+  }
+
   private onlyDigits(value?: string | null) {
     if (value === null || value === undefined) {
       return value;
@@ -97,7 +102,7 @@ export class CustomersService {
     const cpfValue = data.cpf_cnpj ?? data.cpfCnpj ?? data.cpf;
     const emailValue = data.email ?? data.emailAddress ?? data.e_mail;
     const telefoneCelularValue =
-      data.tel ?? data.celular ?? data.telefoneCelular ?? data.telefone_celular;
+      data.celular ?? data.tel ?? data.telefoneCelular ?? data.telefone_celular;
     const enderecoValue = data.endereco ?? data.enderecoCompleto;
     const cepValue = data.cep ?? data.codigoPostal;
     const logradouroValue = data.logadouro ?? data.logradouro;
@@ -162,12 +167,13 @@ export class CustomersService {
     }
   }
 
-  async findAll(page = 1, limit = 10) {
+  async findAll(page = 1, limit = 10, order?: string) {
+    const prismaOrder = this.getPrismaOrder(order);
     const skip = (page - 1) * limit;
 
     const [customers, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
-        orderBy: { data_criacao_usuario: 'desc' },
+        orderBy: { data_criacao_usuario: prismaOrder },
         skip,
         take: limit,
       }),
@@ -200,10 +206,14 @@ export class CustomersService {
 
   async update(id: string, data: UpdateCustomerInput) {
     try {
-      return await this.prisma.customer.update({
+      const normalized = this.normalizeUpdateInput(data);
+
+      const customer = await this.prisma.customer.update({
         where: { id },
-        data: this.normalizeUpdateInput(data),
+        data: normalized,
       });
+
+      return this.mapCustomerResponse(customer);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -239,8 +249,16 @@ export class CustomersService {
     }
   }
 
-  async search(filters: FilterCustomerDto) {
+  async search(filters: FilterCustomerDto, order = 'desc') {
     const { nome, email, cpf, page = 1, limit = 10 } = filters;
+    const rawOrder =
+      order ??
+      filters.order ??
+      filters.sort ??
+      filters.direction ??
+      filters.sorting ??
+      filters.orderBy;
+    const prismaOrder = this.getPrismaOrder(rawOrder);
 
     const where: Prisma.CustomerWhereInput = {
       ...(nome && {
@@ -257,7 +275,7 @@ export class CustomersService {
     const [customers, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
         where,
-        orderBy: { data_criacao_usuario: 'desc' },
+        orderBy: { data_criacao_usuario: prismaOrder },
         skip,
         take: limit,
       }),
