@@ -90,4 +90,20 @@ export class CustomersController {
         filters.orderBy,
     );
   }
+
+  @Get('cpf/:cpf')
+  @ApiOperation({ summary: 'Buscar cliente por CPF' })
+  @ApiResponse({ status: 200, type: Customer })
+  @ApiResponse({ status: 404, description: 'Cliente não encontrado' })
+  findByCpf(@Param('cpf') cpf: string) {
+    return this.customersService.findByCpf(cpf);
+  }
+
+  @Get('cnpj/:cnpj')
+  @ApiOperation({ summary: 'Buscar cliente por CNPJ' })
+  @ApiResponse({ status: 200, type: Customer })
+  @ApiResponse({ status: 404, description: 'Cliente não encontrado' })
+  findByCnpj(@Param('cnpj') cnpj: string) {
+    return this.customersService.findByCnpj(cnpj);
+  }
 }

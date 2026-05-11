@@ -1,27 +1,32 @@
 import {
   BadGatewayException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { PrismaService } from 'nestjs-prisma';
-import { CreateWintourImportInput } from './dto/create-wintour-import.input';
+import { Prisma, TravelType } from '@prisma/client';
+import {
+  CreateWintourImportInput,
+  WintourCustomerInput,
+} from './dto/create-wintour-import.input';
+import { UpdateSaleDto } from './dto/update-sale.dto';
 import { Customer } from '../customers/entities/customer.entity';
+import { WintourSoapService } from './wintour-soap.service';
 
 @Injectable()
 export class SalesService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(SalesService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private readonly wintourSoapService: WintourSoapService,
+  ) {}
 
   private getIntegrationConfig() {
-    const url =
-      process.env.WINTOUR_SOAP_URL ??
-      'https://www.digirotas.com/HubInterfacesSoap/soap/IHubInterfaces';
     const pin = process.env.WINTOUR_SOAP_PIN ?? 'xDIy1d9lSlTQZy7z7MP9zBKcAQ';
     const livre = process.env.WINTOUR_SOAP_LIVRE ?? '';
-    const namespace =
-      process.env.WINTOUR_SOAP_NAMESPACE ?? 'http://tempuri.org/';
-    const soapAction =
-      process.env.WINTOUR_SOAP_ACTION ?? `${namespace}importaArquivo2`;
 
     if (!pin) {
       throw new ServiceUnavailableException(
@@ -30,11 +35,8 @@ export class SalesService {
     }
 
     return {
-      url,
       pin,
       livre,
-      namespace,
-      soapAction,
     };
   }
 
@@ -115,6 +117,139 @@ export class SalesService {
     }
 
     return null;
+  }
+
+  private resolveSaleDateFromServices(
+    servicesDetailsInput?: Record<string, unknown>,
+  ): Date | null {
+    const providedServicesDetails = this.isPlainObject(servicesDetailsInput)
+      ? servicesDetailsInput
+      : {};
+    const providedTravel = this.isPlainObject(providedServicesDetails.travel)
+      ? (providedServicesDetails.travel as Record<string, unknown>)
+      : {};
+    const providedDetails = this.isPlainObject(providedServicesDetails.details)
+      ? (providedServicesDetails.details as Record<string, unknown>)
+      : {};
+
+    const travelSaleDate =
+      typeof providedTravel.saleDate === 'string'
+        ? providedTravel.saleDate
+        : null;
+    const detailsSaleDate =
+      typeof providedDetails.saleDate === 'string'
+        ? providedDetails.saleDate
+        : null;
+
+    return this.parseDate(travelSaleDate ?? detailsSaleDate);
+  }
+
+  private parseDateBoundary(
+    value: string | undefined,
+    boundary: 'start' | 'end',
+  ): Date | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    const plainDateMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (plainDateMatch) {
+      const [yearText, monthText, dayText] = plainDateMatch.slice(1);
+      const year = Number(yearText);
+      const month = Number(monthText);
+      const day = Number(dayText);
+
+      if (
+        !Number.isFinite(year) ||
+        !Number.isFinite(month) ||
+        !Number.isFinite(day)
+      ) {
+        return undefined;
+      }
+
+      if (boundary === 'start') {
+        return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+      }
+
+      return new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+    }
+
+    const parsed = new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
+      return undefined;
+    }
+
+    return parsed;
+  }
+
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private async getSaleIdsByHeaderId(
+    headerId: string,
+    tx: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<string[]> {
+    const sales = await tx.sale.findMany({
+      select: {
+        id: true,
+        servicesData: true,
+      },
+    });
+
+    return sales
+      .filter((sale) => {
+        const saleData =
+          (sale.servicesData as Record<string, any> | null) ?? {};
+        const details =
+          (saleData.details as Record<string, any> | undefined) ?? {};
+        return details.wintourHeaderId === headerId;
+      })
+      .map((sale) => sale.id);
+  }
+
+  private async getSaleIdsByFileNumber(
+    nrArquivo: string,
+    tx: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<string[]> {
+    const sales = await tx.sale.findMany({
+      select: {
+        id: true,
+        servicesData: true,
+      },
+    });
+
+    return sales
+      .filter((sale) => {
+        const saleData =
+          (sale.servicesData as Record<string, any> | null) ?? {};
+        const details =
+          (saleData.details as Record<string, any> | undefined) ?? {};
+        return details.nr_arquivo === nrArquivo;
+      })
+      .map((sale) => sale.id);
+  }
+
+  private mapTravelType(value?: string | null): TravelType | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    if (
+      value === 'ONE_WAY' ||
+      value === 'ROUND_TRIP' ||
+      value === 'MULTI_CITY'
+    ) {
+      return value;
+    }
+
+    if (value === 'Somente ida') return TravelType.ONE_WAY;
+    if (value === 'Ida e volta') return TravelType.ROUND_TRIP;
+    if (value === 'Multi-destino') return TravelType.MULTI_CITY;
+
+    return undefined;
   }
 
   private tag(name: string, value?: unknown) {
@@ -490,34 +625,6 @@ export class SalesService {
 </bilhetes>`;
   }
 
-  private buildSoapEnvelope(
-    pin: string,
-    arquivoBase64: string,
-    livre: string,
-    namespace: string,
-  ) {
-    return `<?xml version="1.0" encoding="utf-8"?>
-    <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="${namespace}">
-      <soapenv:Header/>
-      <soapenv:Body>
-        <web:importaArquivo2>
-          <web:aPin>${pin}</web:aPin>
-          <web:aArquivo>${arquivoBase64}</web:aArquivo>
-          <web:aLivre>${livre}</web:aLivre>
-        </web:importaArquivo2>
-      </soapenv:Body>
-    </soapenv:Envelope>`;
-  }
-
-  private extractSoapValue(xml: string, tagName: string) {
-    const regex = new RegExp(
-      `<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`,
-      'i',
-    );
-    const match = xml.match(regex);
-    return match?.[1]?.trim();
-  }
-
   private isIntegrationErrorMessage(value?: string) {
     if (!value) {
       return false;
@@ -537,45 +644,20 @@ export class SalesService {
 
     const arquivoBase64 = Buffer.from(xml, 'latin1').toString('base64');
 
-    const envelope = this.buildSoapEnvelope(
-      config.pin,
-      arquivoBase64,
-      config.livre,
-      config.namespace,
-    );
+    const { rawResponse, resultValue } =
+      await this.wintourSoapService.importarArquivo2({
+        aPin: config.pin,
+        aArquivo: arquivoBase64,
+        aLivre: config.livre,
+      });
 
-    const response = await fetch(config.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset=utf-8',
-        SOAPAction: config.soapAction,
-      },
-      body: envelope,
-    });
-
-    const rawResponse = await response.text();
-    const faultString = this.extractSoapValue(rawResponse, 'faultstring');
-    const resultValue =
-      this.extractSoapValue(rawResponse, 'importaArquivo2Result') ??
-      this.extractSoapValue(rawResponse, 'return') ??
-      rawResponse;
-
-    if (
-      !response.ok ||
-      faultString ||
-      this.isIntegrationErrorMessage(resultValue)
-    ) {
+    if (this.isIntegrationErrorMessage(resultValue)) {
       throw new BadGatewayException({
         message: `Falha na integracao Wintour: ${
-          (faultString ??
-            (this.isIntegrationErrorMessage(resultValue)
-              ? resultValue
-              : undefined) ??
-            response.statusText) ||
-          'erro desconhecido'
+          resultValue || 'retorno invalido do servico SOAP'
         }`,
         raw_response: rawResponse,
-        status_code: response.status,
+        status_code: 502,
       });
     }
 
@@ -644,17 +726,89 @@ export class SalesService {
     return new Map(linkedUsers.map((user) => [user.id, user]));
   }
 
-  private buildIntegrationPayload(
-    data: CreateWintourImportInput,
+  private normalizeDocument(value?: string | null) {
+    return (value ?? '').replace(/\D/g, '');
+  }
+
+  private async findCustomerByDocument(document?: string | null) {
+    const rawDocument = document?.trim();
+    const normalizedDocument = this.normalizeDocument(document);
+    const documentOptions = Array.from(
+      new Set([rawDocument, normalizedDocument].filter(Boolean)),
+    );
+
+    if (!documentOptions.length) {
+      return null;
+    }
+
+    return this.prisma.customer.findFirst({
+      where: {
+        OR: documentOptions.map((cpf) => ({ cpf })),
+      },
+    });
+  }
+
+  private async resolveTicketsWithCustomers(
+    tickets: CreateWintourImportInput['tickets'],
     customerMap: Map<string, Customer>,
-  ): CreateWintourImportInput {
-    return {
-      ...data,
-      tickets: data.tickets.map((ticket) => {
+  ) {
+    const documentCache = new Map<string, Customer | null>();
+
+    return Promise.all(
+      tickets.map(async (ticket) => {
         const linkedCustomer = ticket.customer_id
           ? customerMap.get(ticket.customer_id)
           : undefined;
 
+        if (linkedCustomer) {
+          return {
+            ticket: {
+              ...ticket,
+              customer_id: linkedCustomer.id,
+            },
+            linkedCustomer,
+          };
+        }
+
+        const documentKey = this.normalizeDocument(ticket.customer?.cpf_cnpj);
+
+        if (!documentKey) {
+          return {
+            ticket,
+            linkedCustomer: undefined,
+          };
+        }
+
+        if (!documentCache.has(documentKey)) {
+          const customer = await this.findCustomerByDocument(
+            ticket.customer?.cpf_cnpj,
+          );
+          documentCache.set(documentKey, customer);
+        }
+
+        const customerByDocument = documentCache.get(documentKey) ?? null;
+
+        return {
+          ticket: {
+            ...ticket,
+            customer_id: customerByDocument?.id ?? ticket.customer_id,
+          },
+          linkedCustomer: customerByDocument ?? undefined,
+        };
+      }),
+    );
+  }
+
+  private buildIntegrationPayload(
+    data: CreateWintourImportInput,
+    resolvedTickets: Array<{
+      ticket: CreateWintourImportInput['tickets'][number];
+      linkedCustomer?: Customer;
+    }>,
+  ): CreateWintourImportInput {
+    return {
+      ...data,
+      tickets: resolvedTickets.map(({ ticket, linkedCustomer }) => {
         return {
           ...ticket,
           cliente: ticket.cliente ?? linkedCustomer?.nome_completo,
@@ -685,315 +839,207 @@ export class SalesService {
       data_geracao,
       hora_geracao,
       nome_agencia,
+      paymentDetails,
+      selectedServices,
+      servicesDetails,
       versao_xml,
       tickets,
     } = data;
+
     await this.getLinkedUsers(tickets);
     const customerMap = await this.getLinkedCustomers(tickets);
-    const integrationPayload = this.buildIntegrationPayload(data, customerMap);
+    const resolvedTickets = await this.resolveTicketsWithCustomers(
+      tickets,
+      customerMap,
+    );
+    const integrationPayload = this.buildIntegrationPayload(
+      data,
+      resolvedTickets,
+    );
 
-    const localImport = await this.prisma.wintourHeader.create({
-      data: {
+    const localImport = await this.prisma.$transaction(async (tx) => {
+      const headersToDelete = await tx.wintourHeader.findMany({
+        where: { nr_arquivo },
+        select: { id: true },
+      });
+
+      for (const header of headersToDelete) {
+        await tx.wintourTicket.deleteMany({
+          where: { header_id: header.id },
+        });
+      }
+
+      const saleIdsByFileNumber = await this.getSaleIdsByFileNumber(
         nr_arquivo,
-        data_geracao,
-        hora_geracao,
-        nome_agencia,
-        versao_xml,
-        integration_status: 'pending',
-        tickets: {
-          create: tickets.map((ticket) => {
-            const linkedCustomer = ticket.customer_id
-              ? customerMap.get(ticket.customer_id)
-              : undefined;
+        tx,
+      );
 
-            const customerSnapshot =
-              ticket.customer ??
-              (linkedCustomer
-                ? {
-                    razao_social: linkedCustomer.nome_completo,
-                    endereco: linkedCustomer.endereco,
-                    bairro: linkedCustomer.bairro,
-                    cep: linkedCustomer.cep,
-                    cidade: linkedCustomer.cidade,
-                    estado: linkedCustomer.estado,
-                    celular: linkedCustomer.telefone_celular,
-                    cpf_cnpj: linkedCustomer.cpf,
-                    dt_cadastro:
-                      this.parseDate(linkedCustomer.data_criacao_usuario) ||
-                      undefined,
-                    email: linkedCustomer.email,
-                  }
-                : undefined);
+      if (saleIdsByFileNumber.length > 0) {
+        await tx.sale.deleteMany({
+          where: { id: { in: saleIdsByFileNumber } },
+        });
+      }
 
-            return {
-              num_bilhete: ticket.num_bilhete,
-              user_id: ticket.user_id || undefined,
-              customer_id: ticket.customer_id || undefined,
-              localizador: ticket.localizador,
-              fornecedor: ticket.fornecedor,
-              passageiro: ticket.passageiro,
-              idv_externo: ticket.idv_externo,
-              id_posto_atendimento: ticket.id_posto_atendimento,
-              posto_atendimento: ticket.posto_atendimento,
-              dt_interna_cadastro: this.parseDate(ticket.dt_interna_cadastro),
-              data_lancamento: this.parseDate(ticket.data_lancamento),
-              codigo_produto: ticket.codigo_produto,
-              prestador_svc: ticket.prestador_svc,
-              tour_code: ticket.tour_code,
-              forma_de_pagamento: ticket.forma_de_pagamento,
-              cartao_mp: ticket.cartao_mp,
-              cartao_cp: ticket.cartao_cp,
-              conta_taxas_adicionais: ticket.conta_taxas_adicionais,
-              conta_taxas_adicionais2: ticket.conta_taxas_adicionais2,
-              cod_outras_txs: ticket.cod_outras_txs,
-              cod_outras_txs2: ticket.cod_outras_txs2,
-              cod_outras_txs3: ticket.cod_outras_txs3,
-              cta_tx_emissao: ticket.cta_tx_emissao,
-              ccustos_agencia: ticket.ccustos_agencia,
-              moeda: ticket.moeda,
-              emissor: ticket.emissor,
-              promotor: ticket.promotor,
-              gerente: ticket.gerente,
-              cliente: ticket.cliente ?? linkedCustomer?.nome_completo,
-              ccustos_cliente: ticket.ccustos_cliente,
-              numero_requisicao: ticket.numero_requisicao,
-              data_requisicao: this.parseDate(ticket.data_requisicao),
-              tipo_passageiro: ticket.tipo_passageiro,
-              solicitante: ticket.solicitante,
-              aprovador: ticket.aprovador,
-              departamento: ticket.departamento,
-              matricula: ticket.matricula,
-              num_cc: ticket.num_cc,
-              cod_autorizacao_cc: ticket.cod_autorizacao_cc,
-              tipo_domest_inter: ticket.tipo_domest_inter,
-              scdp: ticket.scdp,
-              info_adicionais: ticket.info_adicionais,
-              info_internas: ticket.info_internas,
-              canal_captacao: ticket.canal_captacao,
-              cta_du_rav: ticket.cta_du_rav,
-              situacao_contabil: ticket.situacao_contabil,
-              projeto: ticket.projeto,
-              motivo_viagem: ticket.motivo_viagem,
-              motivo_recusa: ticket.motivo_recusa,
-              tipo_roteiro_aereo: ticket.tipo_roteiro_aereo,
-              destino_rot_aereo: ticket.destino_rot_aereo,
-              canal_venda: ticket.canal_venda,
-              multi_ccustos_cli: ticket.multi_ccustos_cli,
-              tipo_roteiro: ticket.tipo_roteiro,
-              tarifa_net: ticket.tarifa_net,
-              tipo_emissao: ticket.tipo_emissao,
-              co2_kg: ticket.co2_kg,
-              cid_dest_principal: ticket.cid_dest_principal,
-              apportionments: {
-                create: ticket.apportionments?.map((a) => ({
-                  ccustos_cliente: a.ccustos_cliente,
-                  percentual: a.percentual,
-                })),
-              },
-              values: {
-                create: ticket.values?.map((v) => ({
-                  codigo: v.codigo,
-                  valor: v.valor,
-                  valor_df: v.valor_df,
-                  valor_mp: v.valor_mp,
-                })),
-              },
-              expiry_dates: {
-                create: ticket.expiry?.map((e) => ({
-                  codigo: e.codigo,
-                  valor: this.parseDate(e.valor) || new Date(),
-                })),
-              },
-              air_data: ticket.sections
-                ? {
-                    create: {
-                      sections: {
-                        create: ticket.sections.map((s) => ({
-                          cia_iata: s.cia_iata,
-                          numero_voo: s.numero_voo,
-                          aeroporto_origem: s.aeroporto_origem,
-                          aeroporto_destino: s.aeroporto_destino,
-                          data_partida: this.parseDate(s.data_partida),
-                          hora_partida: s.hora_partida,
-                          data_chegada: this.parseDate(s.data_chegada),
-                          hora_chegada: s.hora_chegada,
-                          classe: s.classe,
-                          base_tarifaria: s.base_tarifaria,
-                          ticket_designator: s.ticket_designator,
-                          conexao_arp_partida: s.conexao_arp_partida,
-                          conexao_arp_chegada: s.conexao_arp_chegada,
-                          co2_kg: s.co2_kg,
-                        })),
+      await tx.wintourHeader.deleteMany({
+        where: { nr_arquivo },
+      });
+
+      const createdHeader = await tx.wintourHeader.create({
+        data: {
+          nr_arquivo,
+          data_geracao,
+          hora_geracao,
+          nome_agencia,
+          versao_xml,
+          integration_status: 'pending',
+          tickets: {
+            create: resolvedTickets.map(({ ticket, linkedCustomer }) => {
+              const customerSnapshot: WintourCustomerInput | undefined =
+                ticket.customer ??
+                (linkedCustomer
+                  ? {
+                      razao_social: linkedCustomer.nome_completo,
+                      endereco: linkedCustomer.endereco,
+                      bairro: linkedCustomer.bairro,
+                      cep: linkedCustomer.cep,
+                      cidade: linkedCustomer.cidade,
+                      estado: linkedCustomer.estado,
+                      celular: linkedCustomer.telefone_celular,
+                      cpf_cnpj: linkedCustomer.cpf,
+                      dt_cadastro:
+                        this.parseDate(linkedCustomer.data_criacao_usuario) ||
+                        undefined,
+                      email: linkedCustomer.email,
+                    }
+                  : undefined);
+
+              return {
+                num_bilhete: ticket.num_bilhete,
+                user_id: ticket.user_id || undefined,
+                customer_id: ticket.customer_id || undefined,
+                localizador: ticket.localizador,
+                fornecedor: ticket.fornecedor,
+                passageiro: ticket.passageiro,
+                idv_externo: ticket.idv_externo,
+                data_lancamento: this.parseDate(ticket.data_lancamento),
+                codigo_produto: ticket.codigo_produto,
+                forma_de_pagamento: ticket.forma_de_pagamento,
+                cliente: ticket.cliente ?? linkedCustomer?.nome_completo,
+                cid_dest_principal: ticket.cid_dest_principal,
+                info_adicionais: ticket.info_adicionais,
+                values: {
+                  create: ticket.values?.map((v) => ({
+                    codigo: v.codigo,
+                    valor: v.valor,
+                    valor_df: v.valor_df,
+                    valor_mp: v.valor_mp,
+                  })),
+                },
+                customer_data: customerSnapshot
+                  ? {
+                      create: {
+                        razao_social: customerSnapshot.razao_social,
+                        endereco: customerSnapshot.endereco,
+                        bairro: customerSnapshot.bairro,
+                        cep: customerSnapshot.cep,
+                        cidade: customerSnapshot.cidade,
+                        estado: customerSnapshot.estado,
+                        celular: customerSnapshot.celular,
+                        cpf_cnpj: customerSnapshot.cpf_cnpj,
+                        dt_cadastro: this.parseDate(
+                          customerSnapshot.dt_cadastro,
+                        ),
+                        email: customerSnapshot.email,
                       },
-                    },
-                  }
-                : undefined,
-              hotel_data: ticket.hotel
-                ? {
-                    create: {
-                      nr_apts: ticket.hotel.nr_apts,
-                      categ_apt: ticket.hotel.categ_apt,
-                      tipo_apt: ticket.hotel.tipo_apt,
-                      dt_check_in: this.parseDate(ticket.hotel.dt_check_in),
-                      dt_check_out: this.parseDate(ticket.hotel.dt_check_out),
-                      nr_hospedes: ticket.hotel.nr_hospedes,
-                      reg_alimentacao: ticket.hotel.reg_alimentacao,
-                      cod_tipo_pagto: ticket.hotel.cod_tipo_pagto,
-                      dt_confirmacao: this.parseDate(
-                        ticket.hotel.dt_confirmacao,
-                      ),
-                      confirmado_por: ticket.hotel.confirmado_por,
-                    },
-                  }
-                : undefined,
-              customer_data: customerSnapshot
-                ? {
-                    create: {
-                      acao_cli: customerSnapshot.acao_cli,
-                      razao_social: customerSnapshot.razao_social,
-                      tipo_endereco: customerSnapshot.tipo_endereco,
-                      endereco: customerSnapshot.endereco,
-                      numero: customerSnapshot.numero,
-                      complemento: customerSnapshot.complemento,
-                      bairro: customerSnapshot.bairro,
-                      cep: customerSnapshot.cep,
-                      cidade: customerSnapshot.cidade,
-                      estado: customerSnapshot.estado,
-                      tipo_fj: customerSnapshot.tipo_fj,
-                      dt_nasc: this.parseDate(customerSnapshot.dt_nasc),
-                      tel: customerSnapshot.tel,
-                      celular: customerSnapshot.celular,
-                      cpf_cnpj: customerSnapshot.cpf_cnpj,
-                      insc_identidade: customerSnapshot.insc_identidade,
-                      sexo: customerSnapshot.sexo,
-                      dt_cadastro: this.parseDate(customerSnapshot.dt_cadastro),
-                      email: customerSnapshot.email,
-                    },
-                  }
-                : undefined,
-              sales_origins: {
-                create: ticket.sales_origin?.map((so) => ({
-                  item: so.item,
-                })),
-              },
-              conjugates: {
-                create: ticket.ticket_conjugate?.map((c) => ({
-                  item: c.item,
-                })),
-              },
-              location_data: ticket.location
-                ? {
-                    create: {
-                      cidade_retirada: ticket.location.cidade_retirada,
-                      local_retirada: ticket.location.local_retirada,
-                      dt_retirada: this.parseDate(ticket.location.dt_retirada),
-                      hr_retirada: ticket.location.hr_retirada,
-                      local_devolucao: ticket.location.local_devolucao,
-                      dt_devolucao: this.parseDate(
-                        ticket.location.dt_devolucao,
-                      ),
-                      hr_devolucao: ticket.location.hr_devolucao,
-                      categ_veiculo: ticket.location.categ_veiculo,
-                      cod_tipo_pagto: ticket.location.cod_tipo_pagto,
-                      dt_confirmacao: this.parseDate(
-                        ticket.location.dt_confirmacao,
-                      ),
-                      confirmado_por: ticket.location.confirmado_por,
-                    },
-                  }
-                : undefined,
-              package_data: ticket.package
-                ? {
-                    create: {
-                      cid_dest_principal: ticket.package.cid_dest_principal,
-                      data_inicio_pacote: this.parseDate(
-                        ticket.package.data_inicio_pacote,
-                      ),
-                      data_fim_pacote: this.parseDate(
-                        ticket.package.data_fim_pacote,
-                      ),
-                      descricao_pacote: ticket.package.descricao_pacote,
-                    },
-                  }
-                : undefined,
-              other_services: ticket.other_services
-                ? {
-                    create: {
-                      cid_dest_principal:
-                        ticket.other_services.cid_dest_principal,
-                      data_inicio_outros_svcs: this.parseDate(
-                        ticket.other_services.data_inicio_outros_svcs,
-                      ),
-                      data_fim_outros_svcs: this.parseDate(
-                        ticket.other_services.data_fim_outros_svcs,
-                      ),
-                      descricao_outros_svcs:
-                        ticket.other_services.descricao_outros_svcs,
-                    },
-                  }
-                : undefined,
-              transfer_data: ticket.transfer
-                ? {
-                    create: {
-                      hotel_transfer_in: ticket.transfer.hotel_transfer_in,
-                      cia_iata_chegada: ticket.transfer.cia_iata_chegada,
-                      numero_voo_chegada: ticket.transfer.numero_voo_chegada,
-                      data_chegada_voo: this.parseDate(
-                        ticket.transfer.data_chegada_voo,
-                      ),
-                      hora_chegada_voo: ticket.transfer.hora_chegada_voo,
-                      aeroporto_chegada: ticket.transfer.aeroporto_chegada,
-                      hotel_transfer_out: ticket.transfer.hotel_transfer_out,
-                      data_apanhar_pax: this.parseDate(
-                        ticket.transfer.data_apanhar_pax,
-                      ),
-                      hora_apanhar_pax: ticket.transfer.hora_apanhar_pax,
-                      cia_iata_partida: ticket.transfer.cia_iata_partida,
-                      numero_voo_partida: ticket.transfer.numero_voo_partida,
-                      data_partida_voo: this.parseDate(
-                        ticket.transfer.data_partida_voo,
-                      ),
-                      hora_partida_voo: ticket.transfer.hora_partida_voo,
-                      aeroporto_partida: ticket.transfer.aeroporto_partida,
-                    },
-                  }
-                : undefined,
-              wintour_other: ticket.other
-                ? {
-                    create: {
-                      descricao: ticket.other.descricao,
-                    },
-                  }
-                : undefined,
-            };
-          }),
-        },
-      },
-      include: {
-        tickets: {
-          include: {
-            apportionments: true,
-            values: true,
-            expiry_dates: true,
-            air_data: {
-              include: {
-                sections: true,
-              },
-            },
-            hotel_data: true,
-            customer_data: true,
-            sales_origins: true,
-            conjugates: true,
-            location_data: true,
-            package_data: true,
-            other_services: true,
-            transfer_data: true,
-            wintour_other: true,
-            user: true,
-            customer_record: true,
+                    }
+                  : undefined,
+                sales_origins: {
+                  create: ticket.sales_origin?.map((item) => ({
+                    item: item.item,
+                  })),
+                },
+                conjugates: {
+                  create: ticket.ticket_conjugate?.map((item) => ({
+                    item: item.item,
+                  })),
+                },
+                location_data: ticket.location
+                  ? {
+                      create: {
+                        cidade_retirada: ticket.location.cidade_retirada,
+                        local_retirada: ticket.location.local_retirada,
+                        dt_retirada: this.parseDate(
+                          ticket.location.dt_retirada,
+                        ),
+                        local_devolucao: ticket.location.local_devolucao,
+                        dt_devolucao: this.parseDate(
+                          ticket.location.dt_devolucao,
+                        ),
+                        categ_veiculo: ticket.location.categ_veiculo,
+                      },
+                    }
+                  : undefined,
+                package_data: ticket.package
+                  ? {
+                      create: {
+                        cid_dest_principal: ticket.package.cid_dest_principal,
+                        data_inicio_pacote: this.parseDate(
+                          ticket.package.data_inicio_pacote,
+                        ),
+                        data_fim_pacote: this.parseDate(
+                          ticket.package.data_fim_pacote,
+                        ),
+                        descricao_pacote: ticket.package.descricao_pacote,
+                      },
+                    }
+                  : undefined,
+                other_services: ticket.other_services
+                  ? {
+                      create: {
+                        cid_dest_principal:
+                          ticket.other_services.cid_dest_principal,
+                        data_inicio_outros_svcs: this.parseDate(
+                          ticket.other_services.data_inicio_outros_svcs,
+                        ),
+                        data_fim_outros_svcs: this.parseDate(
+                          ticket.other_services.data_fim_outros_svcs,
+                        ),
+                        descricao_outros_svcs:
+                          ticket.other_services.descricao_outros_svcs,
+                      },
+                    }
+                  : undefined,
+              };
+            }),
           },
         },
-      },
+        include: {
+          tickets: {
+            include: {
+              customer_record: true,
+              customer_data: true,
+              values: true,
+            },
+          },
+        },
+      });
+
+      if (createdHeader.tickets?.length) {
+        await this.createSalesFromHeader(
+          {
+            id: createdHeader.id,
+            tickets: createdHeader.tickets,
+          },
+          nome_agencia,
+          nr_arquivo,
+          paymentDetails,
+          selectedServices,
+          servicesDetails,
+          tx,
+        );
+      }
+
+      return createdHeader;
     });
 
     try {
@@ -1043,20 +1089,18 @@ export class SalesService {
         },
       };
     } catch (error) {
-      if (localImport?.id) {
-        const errorResponse =
-          error instanceof BadGatewayException
-            ? error.getResponse()
-            : undefined;
-        const serializedResponse =
-          typeof errorResponse === 'string'
-            ? errorResponse
-            : errorResponse
-            ? JSON.stringify(errorResponse)
-            : error instanceof Error
-            ? error.message
-            : 'erro desconhecido';
+      const errorResponse =
+        error instanceof BadGatewayException ? error.getResponse() : undefined;
+      const serializedResponse =
+        typeof errorResponse === 'string'
+          ? errorResponse
+          : errorResponse
+          ? JSON.stringify(errorResponse)
+          : error instanceof Error
+          ? error.message
+          : 'erro desconhecido';
 
+      if (localImport?.id) {
         await this.prisma.wintourHeader.update({
           where: {
             id: localImport.id,
@@ -1068,18 +1112,658 @@ export class SalesService {
         });
       }
 
-      if (
-        error instanceof BadGatewayException ||
-        error instanceof ServiceUnavailableException
-      ) {
-        throw error;
+      this.logger.warn(
+        `[createWintourImport] Integracao SOAP Wintour falhou para header ${localImport?.id}, mas a venda local foi mantida. Detalhes: ${serializedResponse}`,
+      );
+
+      const importacaoAtualizada =
+        await this.prisma.wintourHeader.findUniqueOrThrow({
+          where: {
+            id: localImport.id,
+          },
+          include: {
+            tickets: {
+              include: {
+                apportionments: true,
+                values: true,
+                expiry_dates: true,
+                air_data: {
+                  include: {
+                    sections: true,
+                  },
+                },
+                hotel_data: true,
+                customer_data: true,
+                sales_origins: true,
+                conjugates: true,
+                location_data: true,
+                package_data: true,
+                other_services: true,
+                transfer_data: true,
+                wintour_other: true,
+                user: true,
+                customer_record: true,
+              },
+            },
+          },
+        });
+
+      return {
+        importacao: importacaoAtualizada,
+        integracao: {
+          status: 'local_success',
+          protocolo: localImport.id,
+          raw_response: serializedResponse,
+        },
+      };
+    }
+  }
+
+  async findAll({
+    page = 1,
+    limit = 10,
+    startDate,
+    endDate,
+    userId,
+  }: {
+    page?: number;
+    limit?: number;
+    startDate?: string;
+    endDate?: string;
+    userId?: string;
+  }) {
+    console.log('Filtro de data recebido:', { startDate, endDate, userId });
+
+    const normalizedPage = Math.max(1, Number(page) || 1);
+    const normalizedLimit = Math.max(1, Number(limit) || 10);
+    const skip = (normalizedPage - 1) * normalizedLimit;
+    const startDateBoundary = this.parseDateBoundary(startDate, 'start');
+    const endDateBoundary = this.parseDateBoundary(endDate, 'end');
+
+    const saleDateRange: Prisma.DateTimeFilter = {};
+
+    if (startDateBoundary) {
+      saleDateRange.gte = startDateBoundary;
+    }
+
+    if (endDateBoundary) {
+      saleDateRange.lte = endDateBoundary;
+    }
+
+    const where: Prisma.SaleWhereInput = {
+      ...(Object.keys(saleDateRange).length > 0
+        ? {
+            sale_date: saleDateRange,
+          }
+        : {}),
+    };
+
+    console.log('Filtro Final Prisma:', JSON.stringify(where));
+
+    // Build groups in descending sale_date order so pagination follows the manual sale date.
+    const allSales = await this.prisma.sale.findMany({
+      where,
+      orderBy: [{ sale_date: 'desc' }, { updated_at: 'desc' }],
+      select: {
+        id: true,
+        servicesData: true,
+      },
+    });
+
+    const filteredCount = await this.prisma.sale.count({ where });
+
+    const groups = new Map<
+      string,
+      {
+        representativeId: string;
+        totalValue: number;
+        selectedServices: Set<string>;
+        paymentMethods: Set<string>;
+      }
+    >();
+
+    for (const sale of allSales) {
+      const data = (sale.servicesData as Record<string, any> | null) ?? {};
+      const details = (data.details as Record<string, any> | undefined) ?? {};
+      const groupKey = details.wintourHeaderId ?? sale.id;
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          representativeId: sale.id,
+          totalValue: 0,
+          selectedServices: new Set<string>(),
+          paymentMethods: new Set<string>(),
+        });
       }
 
-      throw new BadGatewayException({
-        message: `Falha na integracao Wintour: ${
-          error instanceof Error ? error.message : 'erro desconhecido'
-        }`,
-      });
+      const group = groups.get(groupKey)!;
+      const currentTotal = Number(details.totalValue ?? 0);
+      if (Number.isFinite(currentTotal)) {
+        group.totalValue += currentTotal;
+      }
+
+      const selectedServices = Array.isArray(data.selectedServices)
+        ? (data.selectedServices as unknown[])
+            .map((value) => String(value ?? '').trim())
+            .filter(Boolean)
+        : [];
+
+      for (const service of selectedServices) {
+        group.selectedServices.add(service);
+      }
+
+      const paymentMethod = String(details.paymentMethod ?? '').trim();
+      if (paymentMethod) {
+        group.paymentMethods.add(paymentMethod);
+      }
     }
+
+    const orderedGroupKeys = Array.from(groups.keys());
+    const total = filteredCount;
+    const pageGroupKeys = orderedGroupKeys.slice(skip, skip + normalizedLimit);
+    const representativeIds = pageGroupKeys
+      .map((key) => groups.get(key)?.representativeId)
+      .filter((value): value is string => Boolean(value));
+
+    const representativeRows = representativeIds.length
+      ? await this.prisma.sale.findMany({
+          where: { id: { in: representativeIds } },
+          include: {
+            customer: true,
+            passengers: true,
+          },
+        })
+      : [];
+
+    const representativeById = new Map(
+      representativeRows.map((row) => [row.id, row]),
+    );
+
+    const sales = pageGroupKeys
+      .map((groupKey) => {
+        const group = groups.get(groupKey);
+        if (!group) {
+          return null;
+        }
+
+        const representative = representativeById.get(group.representativeId);
+        if (!representative) {
+          return null;
+        }
+
+        const sourceData =
+          (representative.servicesData as Record<string, any> | null) ?? {};
+        const sourceDetails =
+          (sourceData.details as Record<string, any> | undefined) ?? {};
+
+        return {
+          ...representative,
+          servicesData: {
+            ...sourceData,
+            selectedServices: Array.from(group.selectedServices),
+            details: {
+              ...sourceDetails,
+              totalValue: group.totalValue,
+              paymentMethod: Array.from(group.paymentMethods).join(', '),
+            },
+          },
+        };
+      })
+      .filter((sale): sale is NonNullable<typeof sale> => Boolean(sale));
+
+    return {
+      data: sales,
+      meta: {
+        total,
+        page: normalizedPage,
+        limit: normalizedLimit,
+        lastPage: Math.ceil(total / normalizedLimit) || 1,
+      },
+    };
+  }
+
+  async findOne(id: string) {
+    this.logger.log(`Backend buscando venda com ID: ${id}`);
+    console.log('Backend buscando venda com ID:', id);
+
+    const sale = await this.prisma.sale.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        passengers: true,
+      },
+    });
+
+    if (!sale) {
+      this.logger.warn(`Venda com id '${id}' não encontrada no banco.`);
+      console.warn(`Venda com id '${id}' não encontrada no banco.`);
+      throw new NotFoundException(`Venda com id '${id}' não encontrada.`);
+    }
+
+    this.logger.log(`Venda encontrada: ${id}`);
+    return {
+      ...sale,
+      passengers: sale.passengers.map(
+        ({ id: passId, created_at, updated_at, saleId, fullName }) => ({
+          id: passId,
+          created_at,
+          updated_at,
+          sale_id: saleId,
+          full_name: fullName,
+        }),
+      ),
+    };
+  }
+
+  async update(id: string, data: UpdateSaleDto) {
+    const existingSale = await this.prisma.sale.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        passengers: true,
+      },
+    });
+
+    if (!existingSale) {
+      throw new NotFoundException(`Venda com id '${id}' não encontrada.`);
+    }
+
+    const currentServicesData = this.isPlainObject(existingSale.servicesData)
+      ? existingSale.servicesData
+      : {};
+    const currentDetails = this.isPlainObject(currentServicesData.details)
+      ? currentServicesData.details
+      : {};
+    const providedServicesDetails = this.isPlainObject(data.servicesDetails)
+      ? data.servicesDetails
+      : undefined;
+    const providedDetails = this.isPlainObject(providedServicesDetails?.details)
+      ? providedServicesDetails.details
+      : undefined;
+    const currentSelectedServices = Array.isArray(
+      currentServicesData.selectedServices,
+    )
+      ? currentServicesData.selectedServices
+      : [];
+    const nextSelectedServices =
+      data.selectedServices ?? currentSelectedServices;
+
+    const nextServicesData =
+      providedServicesDetails !== undefined ||
+      data.selectedServices !== undefined
+        ? {
+            ...(providedServicesDetails ?? currentServicesData),
+            selectedServices: nextSelectedServices,
+            details: {
+              ...currentDetails,
+              ...(providedDetails ?? {}),
+            },
+          }
+        : undefined;
+    const nextDetails =
+      nextServicesData && this.isPlainObject(nextServicesData.details)
+        ? nextServicesData.details
+        : currentDetails;
+    const wintourHeaderId =
+      typeof nextDetails.wintourHeaderId === 'string'
+        ? nextDetails.wintourHeaderId
+        : null;
+    const wintourTicketUpdateData: Prisma.WintourTicketUncheckedUpdateManyInput =
+      {};
+
+    if (data.customerId) {
+      wintourTicketUpdateData.customer_id = data.customerId;
+    }
+
+    if (typeof data.travelData?.destination === 'string') {
+      wintourTicketUpdateData.cid_dest_principal = data.travelData.destination;
+    }
+
+    const paymentMethod = nextDetails.paymentMethod;
+    if (typeof paymentMethod === 'string') {
+      wintourTicketUpdateData.forma_de_pagamento = paymentMethod;
+    }
+
+    const customerName = nextDetails.cliente;
+    if (typeof customerName === 'string') {
+      wintourTicketUpdateData.cliente = customerName;
+    }
+
+    if (
+      nextSelectedServices.length === 1 &&
+      typeof nextSelectedServices[0] === 'string'
+    ) {
+      wintourTicketUpdateData.codigo_produto = nextSelectedServices[0];
+    }
+
+    const nextTravelType = this.mapTravelType(data.travelData?.travelType);
+
+    const updatePayload: Prisma.SaleUpdateInput = {
+      customer: data.customerId
+        ? {
+            connect: { id: data.customerId },
+          }
+        : undefined,
+      sale_date: data.travelData?.saleDate
+        ? new Date(data.travelData.saleDate)
+        : undefined,
+      origin: data.travelData?.origin,
+      destination: data.travelData?.destination,
+      departureDate: data.travelData?.departureDate
+        ? new Date(data.travelData.departureDate)
+        : undefined,
+      returnDate:
+        data.travelData && 'returnDate' in data.travelData
+          ? data.travelData.returnDate
+            ? new Date(data.travelData.returnDate)
+            : null
+          : undefined,
+      travelType: nextTravelType,
+      servicesData: nextServicesData as Prisma.InputJsonValue | undefined,
+    };
+
+    return this.prisma.$transaction(async (tx) => {
+      const updatedSale = await tx.sale.update({
+        where: { id },
+        data: updatePayload,
+      });
+
+      // Editing a grouped Wintour sale must replace previous grouped rows,
+      // avoiding total accumulation from duplicated rows in list aggregation.
+      if (wintourHeaderId) {
+        const salesWithHeader = await tx.sale.findMany({
+          select: {
+            id: true,
+            servicesData: true,
+          },
+        });
+
+        const duplicateSaleIds = salesWithHeader
+          .filter((saleRow) => {
+            const saleData =
+              (saleRow.servicesData as Record<string, any> | null) ?? {};
+            const details =
+              (saleData.details as Record<string, any> | undefined) ?? {};
+            return (
+              details.wintourHeaderId === wintourHeaderId &&
+              saleRow.id !== updatedSale.id
+            );
+          })
+          .map((saleRow) => saleRow.id);
+
+        if (duplicateSaleIds.length > 0) {
+          await tx.sale.deleteMany({
+            where: {
+              id: { in: duplicateSaleIds },
+            },
+          });
+        }
+      }
+
+      if (data.passengers) {
+        await tx.passenger.deleteMany({ where: { saleId: id } });
+
+        if (data.passengers.length > 0) {
+          await tx.passenger.createMany({
+            data: data.passengers.map((passenger) => ({
+              saleId: id,
+              fullName: passenger.name,
+            })),
+          });
+        }
+      }
+
+      if (wintourHeaderId && Object.keys(wintourTicketUpdateData).length > 0) {
+        await tx.wintourTicket.updateMany({
+          where: { header_id: wintourHeaderId },
+          data: wintourTicketUpdateData,
+        });
+      }
+
+      return tx.sale.findUnique({
+        where: { id: updatedSale.id },
+        include: {
+          customer: true,
+          passengers: true,
+        },
+      });
+    });
+  }
+
+  async remove(id: string): Promise<void> {
+    const sale = await this.prisma.sale.findUnique({
+      where: { id },
+      select: { id: true, servicesData: true },
+    });
+
+    if (!sale) {
+      throw new NotFoundException(`Venda com id '${id}' não encontrada.`);
+    }
+
+    const servicesData = sale.servicesData as {
+      details?: { wintourHeaderId?: string };
+    } | null;
+    const wintourHeaderId = servicesData?.details?.wintourHeaderId ?? null;
+
+    await this.prisma.$transaction(async (tx) => {
+      // Exclui o WintourHeader vinculado (cascade apaga WintourTicket e todos
+      // os seus filhos via onDelete: Cascade definido no schema)
+      if (wintourHeaderId) {
+        await tx.wintourHeader.deleteMany({
+          where: { id: wintourHeaderId },
+        });
+      }
+
+      // Exclui a Sale (cascade apaga Passenger via onDelete: Cascade no schema)
+      await tx.sale.delete({ where: { id } });
+    });
+  }
+
+  private async createSalesFromHeader(
+    header: {
+      id: string;
+      tickets: Array<{
+        id: string;
+        customer_id: string | null;
+        customerId?: string | null;
+        customer_record: { id: string } | null;
+        customer_data: { cpf_cnpj: string | null } | null;
+        cid_dest_principal: string | null;
+        data_lancamento: Date | null;
+        codigo_produto: string | null;
+        forma_de_pagamento: string | null;
+        cliente: string | null;
+        passageiro: string | null;
+        values: Array<{ codigo: string; valor: number }>;
+      }>;
+    },
+    nomeAgencia: string,
+    nrArquivo: string,
+    paymentDetails?: {
+      paymentMethod?: string;
+      totalValue?: number;
+      entryValue?: number;
+      installments?: string;
+      installmentValue?: number;
+      notes?: string;
+      cardBrand?: string;
+    },
+    selectedServicesInput?: string[],
+    servicesDetailsInput?: Record<string, unknown>,
+    prismaClient: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<number> {
+    let created = 0;
+    let skipped = 0;
+
+    let customerId: string | null = null;
+    let destination = '';
+    let departureDate: Date | null = null;
+    let saleDate: Date | null =
+      this.resolveSaleDateFromServices(servicesDetailsInput);
+    let customerName = '';
+    let totalValue = 0;
+    const selectedServices = new Set<string>();
+    const paymentMethods = new Set<string>();
+    const providedServicesDetails = this.isPlainObject(servicesDetailsInput)
+      ? servicesDetailsInput
+      : {};
+    const providedDetails = this.isPlainObject(providedServicesDetails.details)
+      ? (providedServicesDetails.details as Record<string, unknown>)
+      : {};
+    const providedTravel = this.isPlainObject(providedServicesDetails.travel)
+      ? (providedServicesDetails.travel as Record<string, unknown>)
+      : {};
+    const normalizedSelectedServices = Array.isArray(selectedServicesInput)
+      ? selectedServicesInput
+          .map((service) => String(service ?? '').trim())
+          .filter(Boolean)
+      : [];
+
+    for (const ticket of header.tickets) {
+      try {
+        let resolvedCustomerId: string | null =
+          ticket.customer_id ??
+          ticket.customerId ??
+          ticket.customer_record?.id ??
+          null;
+
+        if (!resolvedCustomerId && ticket.customer_data?.cpf_cnpj) {
+          const rawDocument = ticket.customer_data.cpf_cnpj;
+          const normalizedDocument = this.normalizeDocument(rawDocument);
+          const customer = await this.findCustomerByDocument(rawDocument);
+
+          resolvedCustomerId = customer?.id ?? null;
+
+          if (resolvedCustomerId) {
+            this.logger.log(
+              `[createSalesFromHeader] Ticket ${
+                ticket.id
+              } resolveu customer por documento=${
+                normalizedDocument || rawDocument
+              }`,
+            );
+          }
+        }
+
+        if (!resolvedCustomerId) {
+          skipped++;
+          this.logger.warn(
+            `[createSalesFromHeader] Ticket ${ticket.id} ignorado: customer_id nao resolvido`,
+          );
+          continue;
+        }
+
+        customerId = customerId ?? resolvedCustomerId;
+        destination = destination || ticket.cid_dest_principal || '';
+        customerName =
+          customerName || ticket.cliente || ticket.passageiro || '';
+
+        if (ticket.data_lancamento) {
+          departureDate = departureDate
+            ? new Date(
+                Math.min(
+                  departureDate.getTime(),
+                  ticket.data_lancamento.getTime(),
+                ),
+              )
+            : ticket.data_lancamento;
+
+          saleDate = saleDate ?? ticket.data_lancamento;
+        }
+
+        const ticketTotal =
+          ticket.values.find((value) => value.codigo === 'TOTAL')?.valor ?? 0;
+        totalValue += ticketTotal;
+
+        if (ticket.codigo_produto) {
+          selectedServices.add(ticket.codigo_produto);
+        }
+
+        if (ticket.forma_de_pagamento) {
+          paymentMethods.add(ticket.forma_de_pagamento);
+        }
+      } catch (error) {
+        skipped++;
+        this.logger.error(
+          `[createSalesFromHeader] Erro ao processar ticket ${ticket.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    if (customerId) {
+      const resolvedTotalValue =
+        typeof paymentDetails?.totalValue === 'number' &&
+        Number.isFinite(paymentDetails.totalValue)
+          ? paymentDetails.totalValue
+          : totalValue;
+      const resolvedPaymentMethod =
+        typeof paymentDetails?.paymentMethod === 'string' &&
+        paymentDetails.paymentMethod.trim().length > 0
+          ? paymentDetails.paymentMethod.trim()
+          : Array.from(paymentMethods).join(', ');
+      const resolvedSelectedServices =
+        normalizedSelectedServices.length > 0
+          ? normalizedSelectedServices
+          : Array.from(selectedServices);
+      const status = resolvedTotalValue > 0 ? 'APPROVED' : 'PENDING';
+
+      await prismaClient.sale.create({
+        data: {
+          customerId,
+          sale_date: saleDate ?? departureDate ?? new Date(),
+          origin: nomeAgencia ?? '',
+          destination,
+          departureDate: departureDate ?? new Date(),
+          travelType: 'ONE_WAY',
+          servicesData: {
+            ...providedServicesDetails,
+            travel:
+              Object.keys(providedTravel).length > 0
+                ? providedTravel
+                : {
+                    origin: nomeAgencia ?? '',
+                    destination,
+                    departureDate: departureDate
+                      ? departureDate.toISOString()
+                      : undefined,
+                    returnDate: undefined,
+                    travelType: 'ONE_WAY',
+                  },
+            status,
+            selectedServices: resolvedSelectedServices,
+            details: {
+              ...providedDetails,
+              totalValue: resolvedTotalValue,
+              paymentMethod: resolvedPaymentMethod,
+              entryValue:
+                typeof paymentDetails?.entryValue === 'number' &&
+                Number.isFinite(paymentDetails.entryValue)
+                  ? paymentDetails.entryValue
+                  : 0,
+              installments: paymentDetails?.installments ?? '',
+              installmentValue:
+                typeof paymentDetails?.installmentValue === 'number' &&
+                Number.isFinite(paymentDetails.installmentValue)
+                  ? paymentDetails.installmentValue
+                  : 0,
+              notes: paymentDetails?.notes ?? '',
+              cardBrand: paymentDetails?.cardBrand ?? '',
+              cliente: customerName,
+              nr_arquivo: nrArquivo,
+              wintourHeaderId: header.id,
+            },
+          } as Prisma.InputJsonValue,
+        },
+      });
+      created = 1;
+    }
+
+    this.logger.log(
+      `[createSalesFromHeader] Header ${header.id}: sales criadas=${created}, ignoradas=${skipped}`,
+    );
+
+    return created;
   }
 }

@@ -204,6 +204,36 @@ export class CustomersService {
     return this.mapCustomerResponse(customer);
   }
 
+  async findByCpf(cpf: string) {
+    const digits = this.onlyDigits(cpf) ?? cpf;
+
+    const customer = await this.prisma.customer.findUnique({
+      where: { cpf: digits },
+      include: { tickets: true },
+    });
+
+    if (!customer) {
+      throw new NotFoundException(`Cliente com CPF "${cpf}" nao encontrado.`);
+    }
+
+    return this.mapCustomerResponse(customer);
+  }
+
+  async findByCnpj(cnpj: string) {
+    const digits = this.onlyDigits(cnpj) ?? cnpj;
+
+    const customer = await this.prisma.customer.findUnique({
+      where: { cpf: digits },
+      include: { tickets: true },
+    });
+
+    if (!customer) {
+      throw new NotFoundException(`Cliente com CNPJ "${cnpj}" nao encontrado.`);
+    }
+
+    return this.mapCustomerResponse(customer);
+  }
+
   async update(id: string, data: UpdateCustomerInput) {
     try {
       const normalized = this.normalizeUpdateInput(data);

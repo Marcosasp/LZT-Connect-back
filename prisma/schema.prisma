@@ -49,8 +49,41 @@ model Customer {
   estado              String
   data_criacao_usuario DateTime @default(now())
   tickets             WintourTicket[]
+  sales               Sale[]
 
   @@map("clientes")
+}
+
+model Sale {
+  id            String      @id @default(cuid())
+  created_at    DateTime    @default(now())
+  sale_date     DateTime?   @map("sale_date")
+  updated_at    DateTime    @updatedAt
+  customerId    String      @map("customer_id")
+  customer      Customer    @relation(fields: [customerId], references: [id])
+  origin        String
+  destination   String
+  departureDate DateTime    @map("departure_date")
+  returnDate    DateTime?   @map("return_date")
+  travelType    TravelType  @map("travel_type")
+  servicesData  Json?       @map("services_data")
+  passengers    Passenger[]
+
+  @@index([customerId])
+  @@index([sale_date])
+  @@map("sales")
+}
+
+model Passenger {
+  id         String   @id @default(cuid())
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  saleId     String   @map("sale_id")
+  sale       Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  fullName   String   @map("full_name")
+
+  @@index([saleId])
+  @@map("passengers")
 }
 
 model WintourHeader {
@@ -75,7 +108,7 @@ model WintourTicket {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  header    WintourHeader? @relation(fields: [header_id], references: [id])
+  header    WintourHeader? @relation(fields: [header_id], references: [id], onDelete: Cascade)
   header_id String?        @map("header_id")
 
   user    User?   @relation(fields: [user_id], references: [id])
@@ -165,7 +198,7 @@ model WintourApportionment {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   ccustos_cliente String
   percentual      Float
 
@@ -177,7 +210,7 @@ model WintourSalesOrigin {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   item       Int
 
   @@map("wintour_sales_origins")
@@ -188,7 +221,7 @@ model WintourTicketConjugate {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   item       String
 
   @@map("wintour_ticket_conjugates")
@@ -199,7 +232,7 @@ model WintourValue {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   codigo     String
   valor      Float
   valor_df   Float?
@@ -213,7 +246,7 @@ model WintourExpiry {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   codigo     String
   valor      DateTime
 
@@ -225,7 +258,7 @@ model WintourAir {
   created_at DateTime         @default(now())
   updated_at DateTime         @updatedAt
   ticket_id  String           @unique @map("ticket_id")
-  ticket     WintourTicket    @relation(fields: [ticket_id], references: [id])
+  ticket     WintourTicket    @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   sections   WintourSection[]
 
   @@map("wintour_airs")
@@ -236,7 +269,7 @@ model WintourSection {
   created_at          DateTime   @default(now())
   updated_at          DateTime   @updatedAt
   air_id              String     @map("air_id")
-  air                 WintourAir @relation(fields: [air_id], references: [id])
+  air                 WintourAir @relation(fields: [air_id], references: [id], onDelete: Cascade)
   cia_iata            String
   numero_voo          String?
   aeroporto_origem    String
@@ -260,7 +293,7 @@ model WintourHotel {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @unique @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   nr_apts         Int?
   categ_apt       String?
   tipo_apt        String?
@@ -280,7 +313,7 @@ model WintourLocation {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @unique @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   cidade_retirada String?
   local_retirada  String?
   dt_retirada     DateTime?
@@ -301,7 +334,7 @@ model WintourOther {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @unique @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   descricao  String
 
   @@map("wintour_others")
@@ -312,7 +345,7 @@ model WintourTransfer {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @unique @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   // In
   hotel_transfer_in  String?
@@ -340,7 +373,7 @@ model WintourPackage {
   created_at         DateTime      @default(now())
   updated_at         DateTime      @updatedAt
   ticket_id          String        @unique @map("ticket_id")
-  ticket             WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket             WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   cid_dest_principal String?
   data_inicio_pacote DateTime?
   data_fim_pacote    DateTime?
@@ -354,7 +387,7 @@ model WintourOtherService {
   created_at              DateTime      @default(now())
   updated_at              DateTime      @updatedAt
   ticket_id               String        @unique @map("ticket_id")
-  ticket                  WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket                  WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   cid_dest_principal      String?
   data_inicio_outros_svcs DateTime?
   data_fim_outros_svcs    DateTime?
@@ -368,7 +401,7 @@ model WintourCustomerData {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @unique @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id])
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   acao_cli        String?
   razao_social    String?
   tipo_endereco   String?
@@ -395,4 +428,10 @@ model WintourCustomerData {
 enum Role {
   ADMIN
   USER
+}
+
+enum TravelType {
+  ONE_WAY
+  ROUND_TRIP
+  MULTI_CITY
 }

@@ -16,12 +16,9 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       transform: true,
-      whitelist: true, // Ignora campos que não estão no DTO
-      forbidNonWhitelisted: true, // Retorna erro se enviarem campos extras
+      whitelist: true,
     }),
   );
-  // Validation
-  app.useGlobalPipes(new ValidationPipe({ transform: true }));
 
   // enable shutdown hook
   app.enableShutdownHooks();

@@ -1,4 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
+import {
+  Allow,
+  IsArray,
+  IsNumber,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class WintourApportionmentInput {
   @ApiProperty()
@@ -215,24 +223,31 @@ export class WintourOtherInput {
 
 export class WintourTicketInput {
   @ApiProperty({ required: false })
+  @Allow()
   num_bilhete?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   user_id?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   customer_id?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   localizador?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   fornecedor?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   passageiro?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   idv_externo?: string;
 
   @ApiProperty({ required: false })
@@ -245,18 +260,22 @@ export class WintourTicketInput {
   dt_interna_cadastro?: Date;
 
   @ApiProperty({ required: false })
+  @Allow()
   data_lancamento?: Date;
 
   @ApiProperty({ required: false })
+  @Allow()
   codigo_produto?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   prestador_svc?: string;
 
   @ApiProperty({ required: false })
   tour_code?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   forma_de_pagamento?: string;
 
   @ApiProperty({ required: false })
@@ -287,6 +306,7 @@ export class WintourTicketInput {
   ccustos_agencia?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   moeda?: string;
 
   @ApiProperty({ required: false })
@@ -299,6 +319,7 @@ export class WintourTicketInput {
   gerente?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   cliente?: string;
 
   @ApiProperty({ required: false })
@@ -338,6 +359,7 @@ export class WintourTicketInput {
   scdp?: string;
 
   @ApiProperty({ required: false })
+  @Allow()
   info_adicionais?: string;
 
   @ApiProperty({ required: false })
@@ -386,12 +408,14 @@ export class WintourTicketInput {
   co2_kg?: number;
 
   @ApiProperty({ required: false })
+  @Allow()
   cid_dest_principal?: string;
 
   @ApiProperty({ type: () => [WintourApportionmentInput], required: false })
   apportionments?: WintourApportionmentInput[];
 
   @ApiProperty({ type: () => [WintourValueInput], required: false })
+  @Allow()
   values?: WintourValueInput[];
 
   @ApiProperty({ type: () => [WintourExpiryInput], required: false })
@@ -401,9 +425,11 @@ export class WintourTicketInput {
   sections?: WintourSectionInput[];
 
   @ApiProperty({ type: () => WintourHotelInput, required: false })
+  @Allow()
   hotel?: WintourHotelInput;
 
   @ApiProperty({ type: () => WintourCustomerInput, required: false })
+  @Allow()
   customer?: WintourCustomerInput;
 
   @ApiProperty({ type: () => [WintourSalesOriginInput], required: false })
@@ -413,33 +439,91 @@ export class WintourTicketInput {
   ticket_conjugate?: WintourTicketConjugateInput[];
 
   @ApiProperty({ type: () => WintourLocationInput, required: false })
+  @Allow()
   location?: WintourLocationInput;
 
   @ApiProperty({ type: () => WintourPackageInput, required: false })
+  @Allow()
   package?: WintourPackageInput;
 
   @ApiProperty({ type: () => WintourOtherServiceInput, required: false })
+  @Allow()
   other_services?: WintourOtherServiceInput;
 
   @ApiProperty({ type: () => WintourTransferInput, required: false })
   transfer?: WintourTransferInput;
 
   @ApiProperty({ type: () => WintourOtherInput, required: false })
+  @Allow()
   other?: WintourOtherInput;
+}
+
+export class WintourPaymentDetailsInput {
+  @ApiProperty({ required: false })
+  @Allow()
+  paymentMethod?: string;
+
+  @ApiProperty({ required: false })
+  @Allow()
+  totalValue?: number;
+
+  @ApiProperty({ required: false })
+  @Allow()
+  entryValue?: number;
+
+  @ApiProperty({ required: false })
+  @Allow()
+  installments?: string;
+
+  @ApiProperty({ required: false })
+  @Allow()
+  installmentValue?: number;
+
+  @ApiProperty({ required: false })
+  @Allow()
+  notes?: string;
+
+  @ApiProperty({ required: false })
+  @Allow()
+  cardBrand?: string;
 }
 
 export class CreateWintourImportInput {
   @ApiProperty()
+  @IsString()
   nr_arquivo: string;
+
   @ApiProperty()
+  @IsString()
   data_geracao: string;
+
   @ApiProperty()
+  @IsString()
   hora_geracao: string;
+
   @ApiProperty()
+  @IsString()
   nome_agencia: string;
+
   @ApiProperty({ default: 4 })
+  @IsNumber()
   versao_xml: number;
 
+  @ApiProperty({ type: () => WintourPaymentDetailsInput, required: false })
+  @Allow()
+  paymentDetails?: WintourPaymentDetailsInput;
+
+  @ApiProperty({ type: [String], required: false })
+  @Allow()
+  selectedServices?: string[];
+
+  @ApiProperty({ required: false })
+  @Allow()
+  servicesDetails?: Record<string, unknown>;
+
   @ApiProperty({ type: () => [WintourTicketInput] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WintourTicketInput)
   tickets: WintourTicketInput[];
 }

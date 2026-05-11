@@ -2,21 +2,39 @@ import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from 'nestjs-prisma';
 import { SalesService } from './sales.service';
+import { CustomersService } from '../customers/customers.service';
 
 describe('SalesService', () => {
   let service: SalesService;
 
   const mockPrismaService = {
+    $transaction: jest.fn(),
     user: {
       findMany: jest.fn(),
     },
     customer: {
       findMany: jest.fn(),
+      findUnique: jest.fn(),
+    },
+    sale: {
+      create: jest.fn(),
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+      count: jest.fn(),
+    },
+    passenger: {
+      deleteMany: jest.fn(),
     },
     wintourHeader: {
       create: jest.fn(),
       update: jest.fn(),
     },
+  };
+
+  const mockCustomersService = {
+    search: jest.fn(),
   };
 
   const mockFetch = jest.fn();
@@ -31,6 +49,7 @@ describe('SalesService', () => {
       providers: [
         SalesService,
         { provide: PrismaService, useValue: mockPrismaService },
+        { provide: CustomersService, useValue: mockCustomersService },
       ],
     }).compile();
 
@@ -44,6 +63,251 @@ describe('SalesService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('create', () => {
+    it('should create a sale and passengers in a transaction', async () => {
+      const payload = {
+        customerId: 'cmabc123def456ghi789jklm',
+        travelData: {
+          origin: 'Sao Paulo',
+          destination: 'Recife',
+          departureDate: '2026-05-10T09:00:00.000Z',
+          returnDate: '2026-05-15T18:00:00.000Z',
+          travelType: 'ROUND_TRIP',
+        },
+        selectedServices: ['hotel', 'car_rental'],
+        servicesDetails: {
+          hotel: { hotelName: 'Boa Viagem Suites', nights: 5 },
+          carRental: { company: 'Localiza', category: 'SUV' },
+        },
+        passengers: [{ name: 'Maria Silva' }, { name: 'Joao Souza' }],
+      };
+
+      mockPrismaService.$transaction.mockImplementation(async (callback) =>
+        callback({
+          customer: {
+            findUnique: mockPrismaService.customer.findUnique,
+          },
+          sale: {
+            create: mockPrismaService.sale.create,
+          },
+        }),
+      );
+      mockPrismaService.customer.findUnique.mockResolvedValue({
+        id: payload.customerId,
+      });
+      mockPrismaService.sale.create.mockResolvedValue({
+        id: 'sale-1',
+        customerId: payload.customerId,
+        origin: payload.travelData.origin,
+        destination: payload.travelData.destination,
+        departureDate: new Date(payload.travelData.departureDate),
+        returnDate: new Date(payload.travelData.returnDate),
+        travelType: payload.travelData.travelType,
+        servicesData: {
+          selectedServices: payload.selectedServices,
+          details: payload.servicesDetails,
+        },
+        customer: { id: payload.customerId },
+        passengers: [
+          { id: 'passenger-1', fullName: 'Maria Silva' },
+          { id: 'passenger-2', fullName: 'Joao Souza' },
+        ],
+      });
+
+      const result = await service.create(payload as any);
+
+      expect(mockPrismaService.$transaction).toHaveBeenCalledTimes(1);
+      expect(mockPrismaService.customer.findUnique).toHaveBeenCalledWith({
+        where: { id: payload.customerId },
+        select: { id: true },
+      });
+      expect(mockPrismaService.sale.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          customerId: payload.customerId,
+          origin: payload.travelData.origin,
+          destination: payload.travelData.destination,
+          travelType: payload.travelData.travelType,
+          passengers: {
+            create: [{ fullName: 'Maria Silva' }, { fullName: 'Joao Souza' }],
+          },
+        }),
+        include: {
+          customer: true,
+          passengers: true,
+        },
+      });
+      expect(result.id).toBe('sale-1');
+      expect(result.passengers).toHaveLength(2);
+    });
+
+    it('should throw when customer does not exist', async () => {
+      mockPrismaService.$transaction.mockImplementation(async (callback) =>
+        callback({
+          customer: {
+            findUnique: mockPrismaService.customer.findUnique,
+          },
+          sale: {
+            create: mockPrismaService.sale.create,
+          },
+        }),
+      );
+      mockPrismaService.customer.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.create({
+          customerId: 'cmabc123def456ghi789jklm',
+          travelData: {
+            origin: 'Sao Paulo',
+            destination: 'Recife',
+            departureDate: '2026-05-10T09:00:00.000Z',
+            travelType: 'ONE_WAY',
+          },
+          selectedServices: ['hotel'],
+          servicesDetails: { hotel: { hotelName: 'Boa Viagem Suites' } },
+          passengers: [{ name: 'Maria Silva' }],
+        } as any),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(mockPrismaService.sale.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findAll', () => {
+    it('should return paginated sales list', async () => {
+      const mockSales = [
+        {
+          id: 'sale-1',
+          customerId: 'customer-1',
+          origin: 'Sao Paulo',
+          destination: 'Recife',
+          departureDate: new Date('2026-05-10T09:00:00.000Z'),
+          returnDate: new Date('2026-05-15T18:00:00.000Z'),
+          travelType: 'ROUND_TRIP',
+          servicesData: { selectedServices: ['hotel'] },
+          customer: { id: 'customer-1' },
+          passengers: [{ id: 'passenger-1', fullName: 'Maria Silva' }],
+        },
+      ];
+
+      mockPrismaService.$transaction.mockResolvedValue([mockSales, 1]);
+
+      const result = await service.findAll({ page: 1, limit: 10 });
+
+      expect(result.data).toHaveLength(1);
+      expect(result.meta.total).toBe(1);
+      expect(result.meta.page).toBe(1);
+      expect(result.meta.limit).toBe(10);
+      expect(result.meta.lastPage).toBe(1);
+    });
+  });
+
+  describe('findOne', () => {
+    it('should return a sale by id', async () => {
+      const mockSale = {
+        id: 'sale-1',
+        customerId: 'customer-1',
+        origin: 'Sao Paulo',
+        destination: 'Recife',
+        departureDate: new Date('2026-05-10T09:00:00.000Z'),
+        returnDate: new Date('2026-05-15T18:00:00.000Z'),
+        travelType: 'ROUND_TRIP',
+        servicesData: { selectedServices: ['hotel'] },
+        customer: { id: 'customer-1' },
+        passengers: [{ id: 'passenger-1', fullName: 'Maria Silva' }],
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValue(mockSale);
+
+      const result = await service.findOne('sale-1');
+
+      expect(result).toEqual(mockSale);
+      expect(mockPrismaService.sale.findUnique).toHaveBeenCalledWith({
+        where: { id: 'sale-1' },
+        include: { customer: true, passengers: true },
+      });
+    });
+
+    it('should throw when sale does not exist', async () => {
+      mockPrismaService.sale.findUnique.mockResolvedValue(null);
+
+      await expect(service.findOne('nonexistent-id')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('update', () => {
+    it('should update a sale', async () => {
+      const updatePayload = {
+        travelData: {
+          destination: 'Salvador',
+        },
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValueOnce({
+        id: 'sale-1',
+      });
+
+      mockPrismaService.$transaction.mockImplementation(async (callback) =>
+        callback({
+          sale: {
+            findUnique: jest.fn().mockResolvedValueOnce({
+              id: 'sale-1',
+              servicesData: { selectedServices: ['hotel'] },
+            }),
+            update: jest.fn().mockResolvedValue({
+              id: 'sale-1',
+              destination: 'Salvador',
+            }),
+          },
+          customer: {
+            findUnique: jest.fn(),
+          },
+          passenger: {
+            deleteMany: jest.fn(),
+          },
+        }),
+      );
+
+      const result = await service.update('sale-1', updatePayload as any);
+
+      expect(result.id).toBe('sale-1');
+      expect(result.destination).toBe('Salvador');
+    });
+
+    it('should throw when sale does not exist', async () => {
+      mockPrismaService.sale.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.update('nonexistent-id', { travelData: {} } as any),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('remove', () => {
+    it('should remove a sale', async () => {
+      mockPrismaService.sale.findUnique.mockResolvedValue({
+        id: 'sale-1',
+      });
+      mockPrismaService.sale.delete.mockResolvedValue({ id: 'sale-1' });
+
+      const result = await service.remove('sale-1');
+
+      expect(result.message).toBe('Venda removida com sucesso.');
+      expect(mockPrismaService.sale.delete).toHaveBeenCalledWith({
+        where: { id: 'sale-1' },
+      });
+    });
+
+    it('should throw when sale does not exist', async () => {
+      mockPrismaService.sale.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('nonexistent-id')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
   });
 
   describe('createWintourImport', () => {

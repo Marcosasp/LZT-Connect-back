@@ -37,6 +37,32 @@ Table clientes {
   estado String [not null]
   data_criacao_usuario DateTime [default: `now()`, not null]
   tickets wintour_tickets [not null]
+  sales sales [not null]
+}
+
+Table sales {
+  id String [pk]
+  created_at DateTime [default: `now()`, not null]
+  sale_date DateTime
+  updated_at DateTime [not null]
+  customerId String [not null]
+  customer clientes [not null]
+  origin String [not null]
+  destination String [not null]
+  departureDate DateTime [not null]
+  returnDate DateTime
+  travelType TravelType [not null]
+  servicesData Json
+  passengers passengers [not null]
+}
+
+Table passengers {
+  id String [pk]
+  created_at DateTime [default: `now()`, not null]
+  updated_at DateTime [not null]
+  saleId String [not null]
+  sale sales [not null]
+  fullName String [not null]
 }
 
 Table wintour_headers {
@@ -340,36 +366,46 @@ Enum Role {
   USER
 }
 
-Ref: wintour_tickets.header_id > wintour_headers.id
+Enum TravelType {
+  ONE_WAY
+  ROUND_TRIP
+  MULTI_CITY
+}
+
+Ref: sales.customerId > clientes.id
+
+Ref: passengers.saleId > sales.id [delete: Cascade]
+
+Ref: wintour_tickets.header_id > wintour_headers.id [delete: Cascade]
 
 Ref: wintour_tickets.user_id > users.id
 
 Ref: wintour_tickets.customer_id > clientes.id
 
-Ref: wintour_apportionments.ticket_id > wintour_tickets.id
+Ref: wintour_apportionments.ticket_id > wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_sales_origins.ticket_id > wintour_tickets.id
+Ref: wintour_sales_origins.ticket_id > wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_ticket_conjugates.ticket_id > wintour_tickets.id
+Ref: wintour_ticket_conjugates.ticket_id > wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_values.ticket_id > wintour_tickets.id
+Ref: wintour_values.ticket_id > wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_expiries.ticket_id > wintour_tickets.id
+Ref: wintour_expiries.ticket_id > wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_airs.ticket_id - wintour_tickets.id
+Ref: wintour_airs.ticket_id - wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_sections.air_id > wintour_airs.id
+Ref: wintour_sections.air_id > wintour_airs.id [delete: Cascade]
 
-Ref: wintour_hotels.ticket_id - wintour_tickets.id
+Ref: wintour_hotels.ticket_id - wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_locations.ticket_id - wintour_tickets.id
+Ref: wintour_locations.ticket_id - wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_others.ticket_id - wintour_tickets.id
+Ref: wintour_others.ticket_id - wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_transfers.ticket_id - wintour_tickets.id
+Ref: wintour_transfers.ticket_id - wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_packages.ticket_id - wintour_tickets.id
+Ref: wintour_packages.ticket_id - wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_other_services.ticket_id - wintour_tickets.id
+Ref: wintour_other_services.ticket_id - wintour_tickets.id [delete: Cascade]
 
-Ref: wintour_customer_data.ticket_id - wintour_tickets.id
+Ref: wintour_customer_data.ticket_id - wintour_tickets.id [delete: Cascade]
