@@ -221,6 +221,79 @@ describe('SalesService', () => {
       expect(result.meta.limit).toBe(10);
       expect(result.meta.lastPage).toBe(1);
     });
+
+    it('should sort globally before paginating when sortBy is az', async () => {
+      const allSalesRows = [
+        {
+          id: 'sale-c',
+          sale_date: new Date('2026-05-12T10:00:00.000Z'),
+          updated_at: new Date('2026-05-12T10:00:00.000Z'),
+          servicesData: { details: { wintourHeaderId: 'group-c' } },
+          customer: {
+            razao_social: 'Carlos Turismo',
+            nome_completo: 'Carlos',
+            email: 'carlos@example.com',
+            cpf: '11111111111',
+          },
+        },
+        {
+          id: 'sale-b',
+          sale_date: new Date('2026-05-11T10:00:00.000Z'),
+          updated_at: new Date('2026-05-11T10:00:00.000Z'),
+          servicesData: { details: { wintourHeaderId: 'group-b' } },
+          customer: {
+            razao_social: 'Bruna Viagens',
+            nome_completo: 'Bruna',
+            email: 'bruna@example.com',
+            cpf: '22222222222',
+          },
+        },
+        {
+          id: 'sale-a',
+          sale_date: new Date('2026-05-10T10:00:00.000Z'),
+          updated_at: new Date('2026-05-10T10:00:00.000Z'),
+          servicesData: { details: { wintourHeaderId: 'group-a' } },
+          customer: {
+            razao_social: 'Ana Travel',
+            nome_completo: 'Ana',
+            email: 'ana@example.com',
+            cpf: '33333333333',
+          },
+        },
+      ];
+
+      const representativeSaleB = {
+        id: 'sale-b',
+        customerId: 'customer-b',
+        origin: 'Sao Paulo',
+        destination: 'Recife',
+        departureDate: new Date('2026-05-11T09:00:00.000Z'),
+        returnDate: new Date('2026-05-15T18:00:00.000Z'),
+        travelType: 'ROUND_TRIP',
+        servicesData: {
+          selectedServices: ['hotel'],
+          details: { totalValue: 300, paymentMethod: 'Cartão' },
+        },
+        customer: { id: 'customer-b' },
+        passengers: [],
+      };
+
+      mockPrismaService.sale.findMany
+        .mockResolvedValueOnce(allSalesRows)
+        .mockResolvedValueOnce([representativeSaleB]);
+
+      const result = await service.findAll({
+        page: 2,
+        limit: 1,
+        sortBy: 'az',
+      });
+
+      expect(result.meta.total).toBe(3);
+      expect(result.meta.page).toBe(2);
+      expect(result.meta.lastPage).toBe(3);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].id).toBe('sale-b');
+    });
   });
 
   describe('findOne', () => {

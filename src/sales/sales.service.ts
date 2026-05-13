@@ -188,6 +188,72 @@ export class SalesService {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
+  private normalizeStatusFilter(status?: string) {
+    const normalized = String(status ?? '')
+      .trim()
+      .toLowerCase();
+
+    if (
+      normalized === 'approved' ||
+      normalized === 'pending' ||
+      normalized === 'canceled'
+    ) {
+      return normalized;
+    }
+
+    return undefined;
+  }
+
+  private normalizeSearchTerm(search?: string) {
+    const normalized = String(search ?? '')
+      .trim()
+      .toLowerCase();
+    return normalized || undefined;
+  }
+
+  private normalizeSortOption(sortBy?: string) {
+    const normalized = String(sortBy ?? '')
+      .trim()
+      .toLowerCase();
+
+    if (
+      normalized === 'recentes' ||
+      normalized === 'antigos' ||
+      normalized === 'az' ||
+      normalized === 'za'
+    ) {
+      return normalized;
+    }
+
+    return 'recentes';
+  }
+
+  private getSaleStatusGroupFromServicesData(
+    servicesData: Prisma.JsonValue | null,
+  ): 'approved' | 'pending' | 'canceled' {
+    const data = (servicesData as Record<string, unknown> | null) ?? {};
+    const rawStatus =
+      typeof data.status === 'string' ? data.status.trim().toUpperCase() : '';
+
+    if (
+      rawStatus === 'APPROVED' ||
+      rawStatus === 'EM_CHECKIN' ||
+      rawStatus === 'EM CHECK-IN'
+    ) {
+      return 'approved';
+    }
+
+    if (
+      rawStatus === 'CANCELED' ||
+      rawStatus === 'CANCELLED' ||
+      rawStatus === 'CANCELADA'
+    ) {
+      return 'canceled';
+    }
+
+    return 'pending';
+  }
+
   private async getSaleIdsByHeaderId(
     headerId: string,
     tx: PrismaService | Prisma.TransactionClient = this.prisma,
@@ -1164,19 +1230,34 @@ export class SalesService {
     limit = 10,
     startDate,
     endDate,
+    status,
+    search,
+    sortBy,
     userId,
   }: {
     page?: number;
     limit?: number;
     startDate?: string;
     endDate?: string;
+    status?: string;
+    search?: string;
+    sortBy?: string;
     userId?: string;
   }) {
-    console.log('Filtro de data recebido:', { startDate, endDate, userId });
+    console.log('Filtro de data recebido:', {
+      startDate,
+      endDate,
+      status,
+      search,
+      sortBy,
+      userId,
+    });
 
     const normalizedPage = Math.max(1, Number(page) || 1);
     const normalizedLimit = Math.max(1, Number(limit) || 10);
-    const skip = (normalizedPage - 1) * normalizedLimit;
+    const normalizedStatus = this.normalizeStatusFilter(status);
+    const normalizedSearch = this.normalizeSearchTerm(search);
+    const normalizedSortBy = this.normalizeSortOption(sortBy);
     const startDateBoundary = this.parseDateBoundary(startDate, 'start');
     const endDateBoundary = this.parseDateBoundary(endDate, 'end');
 
@@ -1200,17 +1281,47 @@ export class SalesService {
 
     console.log('Filtro Final Prisma:', JSON.stringify(where));
 
-    // Build groups in descending sale_date order so pagination follows the manual sale date.
+    // ─────────────────────────────────────────────────────────────────────────────
+    // ESTRATÉGIA DE PAGINAÇÃO: GRUPOS (não vendas individuais)
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Grupos são virtuais (agrupados por wintourHeaderId ou sale.id).
+    // 
+    // Fluxo:
+    // 1. Buscar TODAS as vendas (com select limitado) para criar grupos.
+    // 2. Agrupa vendas em memória por wintourHeaderId ?? sale.id.
+    // 3. Ordena GRUPOS globalmente (por data ou nome de cliente).
+    // 4. Filtra GRUPOS (por status e search).
+    // 5. Aplicar OFFSET/LIMIT em nível de GRUPOS.
+    // 6. Buscar dados completos apenas dos representantes da página.
+    //
+    // Por que não aplicar take/skip direto no Prisma?
+    // Porque take/skip em Prisma pagina vendas individuais, não grupos.
+    // Isso deixaria agrupamentos incompletos.
+    // Exemplo: venda A+B mesmo grupo, take 10 skip 0 traz só A, grupo fica sem B.
+    //
+    // Otimizações aplicadas:
+    // - select limitado na query inicial (5 campos)
+    // - segunda query busca apenas dados dos representantes da página
+    // ─────────────────────────────────────────────────────────────────────────────
+
     const allSales = await this.prisma.sale.findMany({
       where,
       orderBy: [{ sale_date: 'desc' }, { updated_at: 'desc' }],
       select: {
         id: true,
+        sale_date: true,
+        updated_at: true,
         servicesData: true,
+        customer: {
+          select: {
+            razao_social: true,
+            nome_completo: true,
+            email: true,
+            cpf: true,
+          },
+        },
       },
     });
-
-    const filteredCount = await this.prisma.sale.count({ where });
 
     const groups = new Map<
       string,
@@ -1219,6 +1330,10 @@ export class SalesService {
         totalValue: number;
         selectedServices: Set<string>;
         paymentMethods: Set<string>;
+        statusGroup: 'approved' | 'pending' | 'canceled';
+        searchText: string;
+        customerName: string;
+        referenceDate: Date | null;
       }
     >();
 
@@ -1228,15 +1343,62 @@ export class SalesService {
       const groupKey = details.wintourHeaderId ?? sale.id;
 
       if (!groups.has(groupKey)) {
+        const searchText = [
+          sale.customer?.razao_social,
+          sale.customer?.nome_completo,
+          sale.customer?.email,
+          sale.customer?.cpf,
+        ]
+          .map((value) =>
+            String(value ?? '')
+              .trim()
+              .toLowerCase(),
+          )
+          .filter(Boolean)
+          .join(' ');
+
+        const detailsCustomerName = String(
+          details.cliente ?? details.passageiro ?? '',
+        ).trim();
+
+        const customerName = String(
+          sale.customer?.razao_social ??
+            sale.customer?.nome_completo ??
+            detailsCustomerName,
+        ).trim();
+
+        const referenceDate = sale.sale_date ?? sale.updated_at ?? null;
+
         groups.set(groupKey, {
           representativeId: sale.id,
           totalValue: 0,
           selectedServices: new Set<string>(),
           paymentMethods: new Set<string>(),
+          statusGroup: this.getSaleStatusGroupFromServicesData(
+            sale.servicesData,
+          ),
+          searchText,
+          customerName,
+          referenceDate,
         });
       }
 
       const group = groups.get(groupKey)!;
+
+      if (!group.customerName) {
+        const fallbackCustomerName = String(
+          sale.customer?.razao_social ??
+            sale.customer?.nome_completo ??
+            details.cliente ??
+            details.passageiro ??
+            '',
+        ).trim();
+
+        if (fallbackCustomerName) {
+          group.customerName = fallbackCustomerName;
+        }
+      }
+
       const currentTotal = Number(details.totalValue ?? 0);
       if (Number.isFinite(currentTotal)) {
         group.totalValue += currentTotal;
@@ -1258,9 +1420,71 @@ export class SalesService {
       }
     }
 
-    const orderedGroupKeys = Array.from(groups.keys());
-    const total = filteredCount;
-    const pageGroupKeys = orderedGroupKeys.slice(skip, skip + normalizedLimit);
+    // ─────────────────────────────────────────────────────────────────────────────
+    // ORDENAÇÃO DE GRUPOS (global, antes de paginação)
+    // ─────────────────────────────────────────────────────────────────────────────
+    const groupEntries = Array.from(groups.entries());
+
+    const sortedGroups = groupEntries.sort((left, right) => {
+      const leftGroup = left[1];
+      const rightGroup = right[1];
+      const leftTimestamp = leftGroup.referenceDate
+        ? new Date(leftGroup.referenceDate).getTime()
+        : 0;
+      const rightTimestamp = rightGroup.referenceDate
+        ? new Date(rightGroup.referenceDate).getTime()
+        : 0;
+
+      if (normalizedSortBy === 'az') {
+        const byName = leftGroup.customerName.localeCompare(
+          rightGroup.customerName,
+          'pt-BR',
+          { sensitivity: 'base' },
+        );
+        return byName || rightTimestamp - leftTimestamp;
+      }
+
+      if (normalizedSortBy === 'za') {
+        const byName = rightGroup.customerName.localeCompare(
+          leftGroup.customerName,
+          'pt-BR',
+          { sensitivity: 'base' },
+        );
+        return byName || rightTimestamp - leftTimestamp;
+      }
+
+      if (normalizedSortBy === 'antigos') {
+        return leftTimestamp - rightTimestamp;
+      }
+
+      return rightTimestamp - leftTimestamp;
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // FILTRAGEM DE GRUPOS (após ordenação global)
+    // ─────────────────────────────────────────────────────────────────────────────
+    const sortedAndFilteredGroups = sortedGroups.filter(([, group]) => {
+      const matchesStatus = normalizedStatus
+        ? group.statusGroup === normalizedStatus
+        : true;
+      const matchesSearch = normalizedSearch
+        ? group.searchText.includes(normalizedSearch)
+        : true;
+
+      return matchesStatus && matchesSearch;
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // PAGINAÇÃO EM NÍVEL DE GRUPOS (offset/limit aplicado em memória após ordenação)
+    // ─────────────────────────────────────────────────────────────────────────────
+    const total = sortedAndFilteredGroups.length;
+    const offset = (normalizedPage - 1) * normalizedLimit;
+    const paginatedGroupEntries = sortedAndFilteredGroups.slice(
+      offset,
+      offset + normalizedLimit,
+    );
+
+    const pageGroupKeys = paginatedGroupEntries.map(([groupKey]) => groupKey);
     const representativeIds = pageGroupKeys
       .map((key) => groups.get(key)?.representativeId)
       .filter((value): value is string => Boolean(value));

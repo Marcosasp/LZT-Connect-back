@@ -27,50 +27,57 @@ model User {
   zip_code   String
   role       Role
   tickets    WintourTicket[]
-
+  customers  Customer[]
 
   @@map("users")
 }
 
 model Customer {
-  id                  String   @id @default(cuid())
-  razao_social String?
-  created_at          DateTime @default(now())
-  updated_at          DateTime @updatedAt
-  nome_completo       String
-  cpf                 String   @unique
-  email               String
-  telefone_celular    String
-  endereco            String
-  cep                 String
-  logradouro          String
-  bairro              String
-  cidade              String
-  estado              String
-  data_criacao_usuario DateTime @default(now())
-  tickets             WintourTicket[]
-  sales               Sale[]
+  id                   String          @id @default(cuid())
+  razao_social         String?
+  created_at           DateTime        @default(now())
+  updated_at           DateTime        @updatedAt
+  nome_completo        String
+  cpf                  String          @unique
+  email                String
+  telefone_celular     String
+  endereco             String
+  cep                  String
+  logradouro           String
+  bairro               String
+  cidade               String
+  estado               String
+  data_criacao_usuario DateTime        @default(now())
+  userId               String?         @map("user_id")
+  user                 User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tickets              WintourTicket[]
+  sales                Sale[]
 
+  @@index([userId])
   @@map("clientes")
 }
 
 model Sale {
-  id            String      @id @default(cuid())
-  created_at    DateTime    @default(now())
-  sale_date     DateTime?   @map("sale_date")
-  updated_at    DateTime    @updatedAt
-  customerId    String      @map("customer_id")
-  customer      Customer    @relation(fields: [customerId], references: [id])
-  origin        String
-  destination   String
-  departureDate DateTime    @map("departure_date")
-  returnDate    DateTime?   @map("return_date")
-  travelType    TravelType  @map("travel_type")
-  servicesData  Json?       @map("services_data")
-  passengers    Passenger[]
+  id              String      @id @default(cuid())
+  created_at      DateTime    @default(now())
+  sale_date       DateTime?   @map("sale_date")
+  updated_at      DateTime    @updatedAt
+  customerId      String      @map("customer_id")
+  customer        Customer    @relation(fields: [customerId], references: [id])
+  userId          String?     @map("user_id")
+  customerSource  String      @default("local") @map("customer_source") // 'local' | 'global' (Wintour)
+  origin          String
+  destination     String
+  departureDate   DateTime    @map("departure_date")
+  returnDate      DateTime?   @map("return_date")
+  travelType      TravelType  @map("travel_type")
+  servicesData    Json?       @map("services_data")
+  passengers      Passenger[]
 
   @@index([customerId])
   @@index([sale_date])
+  @@index([userId])
+  @@index([customerSource])
   @@map("sales")
 }
 

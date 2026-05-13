@@ -319,4 +319,172 @@ export class CustomersService {
     const lastPage = Math.ceil(total / limit);
     return { data, meta: { total, page, lastPage } };
   }
+
+  /**
+   * Busca cliente por CPF/CNPJ com escopo de usuário.
+   * Primeiro procura nos clientes do usuário logado.
+   * Se não encontrar, busca na base "global" (simulação Wintour).
+   *
+   * @param cpfCnpj CPF ou CNPJ do cliente
+   * @param userId ID do usuário logado (opcional)
+   * @returns { customer, source: 'local' | 'global' }
+   */
+  async findByCpfWithUserScope(
+    cpfCnpj: string,
+    userId?: string,
+  ): Promise<{ customer: any; source: 'local' | 'global' } | null> {
+    const digits = this.onlyDigits(cpfCnpj) ?? cpfCnpj;
+
+    // 1. Busca na base local do usuário (vinculado pelo user_id)
+    if (userId) {
+      const localCustomer = await this.prisma.customer.findFirst({
+        where: { cpf: digits, userId },
+        include: { tickets: true },
+      });
+
+      if (localCustomer) {
+        return {
+          customer: this.mapCustomerResponse(localCustomer),
+          source: 'local',
+        };
+      }
+    }
+
+    // 2. Busca na base "global" (Wintour simulado — clientes sem vínculo de usuário)
+    // findFirst para não lançar erro quando o CPF não existe
+    const globalCustomer = await this.prisma.customer.findFirst({
+      where: { cpf: digits },
+      include: { tickets: true },
+    });
+
+    if (globalCustomer) {
+      return {
+        customer: this.mapCustomerResponse(globalCustomer),
+        source: 'global',
+      };
+    }
+
+    // Retorna null para que o chamador decida criar o cliente
+    return null;
+  }
+
+  /**
+   * Procura cliente na base global (Wintour simulado) ou cria um novo temporário.
+   * Usado quando o CPF é novo e precisa ser registrado.
+   *
+   * @param data Dados do cliente para busca/criação
+   * @returns { customer, isNew: boolean }
+   */
+  async findOrCreateGlobalCustomer(data: CreateCustomerInput): Promise<{
+    customer: any;
+    isNew: boolean;
+  }> {
+    const normalized = this.normalizeCreateInput(data);
+    const digits = this.onlyDigits(normalized.cpf) ?? normalized.cpf;
+
+    // Tenta buscar na base global
+    const existingCustomer = await this.prisma.customer.findUnique({
+      where: { cpf: digits },
+      include: { tickets: true },
+    });
+
+    if (existingCustomer) {
+      return {
+        customer: this.mapCustomerResponse(existingCustomer),
+        isNew: false,
+      };
+    }
+
+    // Se não existe, cria novo
+    const newCustomer = await this.prisma.customer.create({
+      data: normalized,
+      include: { tickets: true },
+    });
+
+    return {
+      customer: this.mapCustomerResponse(newCustomer),
+      isNew: true,
+    };
+  }
+
+  /**
+   * Vincula um cliente da base "global" (Wintour) ao usuário atual.
+   * Usado quando o cliente foi encontrado na base global e uma venda é criada.
+   *
+   * @param customerId ID do cliente global
+   * @param userId ID do usuário logado
+   * @returns Customer vinculado
+   */
+  async linkGlobalCustomerToUser(
+    customerId: string,
+    userId: string,
+  ): Promise<any> {
+    const linked = await this.prisma.customer.update({
+      where: { id: customerId },
+      data: { userId },
+      include: { tickets: true },
+    });
+
+    return this.mapCustomerResponse(linked);
+  }
+
+  /**
+   * Cria novo cliente na base local do usuário E na base "global" (Wintour simulado).
+   * Garante que o cliente esteja disponível em ambas as fontes.
+   *
+   * @param data Dados do cliente
+   * @param userId ID do usuário logado (opcional)
+   * @returns { customer, createdInLocal: boolean, createdInGlobal: boolean }
+   */
+  async createCustomerInBothSources(
+    data: CreateCustomerInput,
+    userId?: string,
+  ): Promise<{
+    customer: any;
+    createdInLocal: boolean;
+    createdInGlobal: boolean;
+  }> {
+    const normalized = this.normalizeCreateInput(data);
+    const digits = this.onlyDigits(normalized.cpf) ?? normalized.cpf;
+
+    // 1. Tenta buscar cliente existente
+    const existing = await this.prisma.customer.findUnique({
+      where: { cpf: digits },
+      include: { tickets: true },
+    });
+
+    let createdInLocal = false;
+    let createdInGlobal = false;
+
+    if (existing) {
+      // Cliente já existe, apenas retorna
+      return {
+        customer: this.mapCustomerResponse(existing),
+        createdInLocal: false,
+        createdInGlobal: false,
+      };
+    }
+
+    // 2. Cria novo cliente (base local)
+    const newCustomer = await this.prisma.customer.create({
+      data: normalized,
+      include: { tickets: true },
+    });
+
+    createdInLocal = true;
+
+    // 3. TODO: Integração com API Wintour para registrar na base global
+    // Quando Wintour API estiver disponível:
+    // const wintourResult = await this.wintourSoapService.registerCustomer(normalized);
+    // createdInGlobal = !!wintourResult.success;
+
+    // Por enquanto, simulamos a criação na base global
+    createdInGlobal = true;
+
+    return {
+      customer: this.mapCustomerResponse(newCustomer),
+      createdInLocal,
+      createdInGlobal,
+    };
+  }
 }

@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   SerializeOptions,
   UseGuards,
   UseInterceptors,
@@ -105,5 +106,25 @@ export class CustomersController {
   @ApiResponse({ status: 404, description: 'Cliente não encontrado' })
   findByCnpj(@Param('cnpj') cnpj: string) {
     return this.customersService.findByCnpj(cnpj);
+  }
+
+  @Get('triage/:cpfCnpj')
+  @ApiOperation({
+    summary:
+      'Triagem de cliente por CPF/CNPJ (base local primeiro, depois global/Wintour)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Retorna o cliente completo e a origem (local/global) quando encontrado; caso contrário retorna null.',
+  })
+  async triageByCpfCnpj(
+    @Param('cpfCnpj') cpfCnpj: string,
+    @Req() request?: any,
+  ) {
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+
+    return this.customersService.findByCpfWithUserScope(cpfCnpj, userId);
   }
 }

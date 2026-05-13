@@ -18,6 +18,7 @@ Table users {
   zip_code String [not null]
   role Role [not null]
   tickets wintour_tickets [not null]
+  customers clientes [not null]
 }
 
 Table clientes {
@@ -36,6 +37,8 @@ Table clientes {
   cidade String [not null]
   estado String [not null]
   data_criacao_usuario DateTime [default: `now()`, not null]
+  userId String
+  user users
   tickets wintour_tickets [not null]
   sales sales [not null]
 }
@@ -47,6 +50,8 @@ Table sales {
   updated_at DateTime [not null]
   customerId String [not null]
   customer clientes [not null]
+  userId String
+  customerSource String [not null, default: 'local']
   origin String [not null]
   destination String [not null]
   departureDate DateTime [not null]
@@ -371,6 +376,8 @@ Enum TravelType {
   ROUND_TRIP
   MULTI_CITY
 }
+
+Ref: clientes.userId > users.id [delete: Set Null]
 
 Ref: sales.customerId > clientes.id
 
