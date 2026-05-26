@@ -89,9 +89,9 @@ export class CustomersController {
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Remover cliente da lista do usuário' })
+  @ApiOperation({ summary: 'Remover cliente do usuário' })
   @ApiResponse({ status: 200, schema: { example: { success: true } } })
-  async unlinkFromUser(@Param('id') id: string, @Req() request: any) {
+  async deleteCustomer(@Param('id') id: string, @Req() request: any) {
     const user = request?.user as { id?: string; user_id?: string } | undefined;
     const userId = user?.id ?? user?.user_id;
 
@@ -99,7 +99,7 @@ export class CustomersController {
       throw new UnauthorizedException('Usuário não autenticado.');
     }
 
-    await this.customersService.unlinkFromUser(id, userId);
+    await this.customersService.deleteCustomer(id, userId);
     return { success: true };
   }
 
@@ -154,16 +154,20 @@ export class CustomersController {
   @ApiOperation({ summary: 'Buscar cliente por CPF' })
   @ApiResponse({ status: 200, type: Customer })
   @ApiResponse({ status: 404, description: 'Cliente não encontrado' })
-  findByCpf(@Param('cpf') cpf: string) {
-    return this.customersService.findByCpf(cpf);
+  findByCpf(@Param('cpf') cpf: string, @Req() request?: any) {
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+    return this.customersService.findByCpf(cpf, userId);
   }
 
   @Get('cnpj/:cnpj')
   @ApiOperation({ summary: 'Buscar cliente por CNPJ' })
   @ApiResponse({ status: 200, type: Customer })
   @ApiResponse({ status: 404, description: 'Cliente não encontrado' })
-  findByCnpj(@Param('cnpj') cnpj: string) {
-    return this.customersService.findByCnpj(cnpj);
+  findByCnpj(@Param('cnpj') cnpj: string, @Req() request?: any) {
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+    return this.customersService.findByCnpj(cnpj, userId);
   }
 
   @Get('triage/:cpfCnpj')

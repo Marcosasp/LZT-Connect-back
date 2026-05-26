@@ -52,7 +52,7 @@ export class CustomersService {
 
   private normalizeCreateInput(
     data: CreateCustomerInput,
-  ): Prisma.CustomerUncheckedCreateInput {
+  ): Omit<Prisma.CustomerUncheckedCreateInput, 'userId'> {
     const nomeCompletoValue =
       data.nome ?? data.nomeCompleto ?? data.nome_completo ?? data.razao_social;
     const nomeCompleto = nomeCompletoValue?.trim() ?? '';
@@ -150,18 +150,14 @@ export class CustomersService {
     };
   }
 
-  async create(data: CreateCustomerInput, userId?: string) {
+  async create(data: CreateCustomerInput, userId: string) {
     try {
       const customer = await this.prisma.customer.create({
-        data: this.normalizeCreateInput(data),
+        data: {
+          ...this.normalizeCreateInput(data),
+          userId,
+        },
       });
-
-      // Cria o vínculo UserCustomer se um usuário estiver autenticado
-      if (userId) {
-        await this.prisma.userCustomer.create({
-          data: { userId, customerId: customer.id },
-        });
-      }
 
       return customer;
     } catch (error) {
@@ -177,17 +173,13 @@ export class CustomersService {
   }
 
   async findAll(page = 1, limit = 10, order?: string, userId?: string) {
-    // Segurança: nunca expor clientes de outros usuários.
     if (!userId) {
-      const lastPage = 1;
-      return { data: [], meta: { total: 0, page, lastPage } };
+      return { data: [], meta: { total: 0, page, lastPage: 1 } };
     }
 
     const prismaOrder = this.getPrismaOrder(order);
     const skip = (page - 1) * limit;
-    const where: Prisma.CustomerWhereInput = {
-      userCustomers: { some: { userId } },
-    };
+    const where: Prisma.CustomerWhereInput = { userId };
 
     const [customers, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
@@ -197,11 +189,6 @@ export class CustomersService {
           _count: {
             select: { sales: true },
           },
-          userCustomers: {
-            where: { userId },
-            select: { created_at: true },
-            take: 1,
-          },
         },
         skip,
         take: limit,
@@ -210,12 +197,10 @@ export class CustomersService {
     ]);
 
     const data = customers.map((customer) => {
-      const { userCustomers, _count, ...customerData } = customer;
-      const linkedAt = userCustomers[0]?.created_at;
+      const { _count, ...customerData } = customer;
 
       return {
         ...this.mapCustomerResponse(customerData),
-        user_customer_created_at: linkedAt,
         sales_count: _count.sales,
       };
     });
@@ -240,11 +225,15 @@ export class CustomersService {
     return this.mapCustomerResponse(customer);
   }
 
-  async findByCpf(cpf: string) {
+  async findByCpf(cpf: string, userId?: string) {
     const digits = this.onlyDigits(cpf) ?? cpf;
 
+    const where = userId
+      ? { cpf_userId: { cpf: digits, userId } }
+      : { cpf: digits };
+
     const customer = await this.prisma.customer.findUnique({
-      where: { cpf: digits },
+      where: where as any,
       include: { tickets: true },
     });
 
@@ -255,11 +244,15 @@ export class CustomersService {
     return this.mapCustomerResponse(customer);
   }
 
-  async findByCnpj(cnpj: string) {
+  async findByCnpj(cnpj: string, userId?: string) {
     const digits = this.onlyDigits(cnpj) ?? cnpj;
 
+    const where = userId
+      ? { cpf_userId: { cpf: digits, userId } }
+      : { cpf: digits };
+
     const customer = await this.prisma.customer.findUnique({
-      where: { cpf: digits },
+      where: where as any,
       include: { tickets: true },
     });
 
@@ -299,20 +292,18 @@ export class CustomersService {
     }
   }
 
-  async unlinkFromUser(customerId: string, userId: string) {
+  async deleteCustomer(customerId: string, userId: string) {
     try {
-      await this.prisma.userCustomer.delete({
-        where: { userId_customerId: { userId, customerId } },
+      await this.prisma.customer.delete({
+        where: { id: customerId, userId },
       });
-      return { message: 'Cliente removido da sua lista com sucesso.' };
+      return { message: 'Cliente removido com sucesso.' };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2025'
       ) {
-        throw new NotFoundException(
-          `Vínculo com cliente "${customerId}" não encontrado.`,
-        );
+        throw new NotFoundException(`Cliente "${customerId}" não encontrado.`);
       }
 
       throw error;
@@ -320,7 +311,6 @@ export class CustomersService {
   }
 
   async search(filters: FilterCustomerDto, order = 'desc', userId?: string) {
-    // Segurança: nunca expor clientes de outros usuários.
     if (!userId) {
       const page = filters.page ?? 1;
       return { data: [], meta: { total: 0, page, lastPage: 1 } };
@@ -337,8 +327,7 @@ export class CustomersService {
     const prismaOrder = this.getPrismaOrder(rawOrder);
 
     const where: Prisma.CustomerWhereInput = {
-      // Segurança: restringe sempre ao usuário logado via UserCustomer.
-      userCustomers: { some: { userId } },
+      userId,
       ...(nome && {
         nome_completo: { contains: nome, mode: 'insensitive' },
       }),
@@ -369,189 +358,25 @@ export class CustomersService {
   }
 
   /**
-   * Triagem de cliente por CPF/CNPJ com escopo de usuário via tabela pivot UserCustomer.
-   *
-   * Fluxo:
-   * 1. Verifica se existe vínculo UserCustomer para o usuário + CPF.
-   * 2. Se não, busca Customer global pelo CPF.
-   * 3. Se encontrar, cria o vínculo em UserCustomer.
-   * 4. Se não encontrar, retorna null.
-   *
-   * @param cpfCnpj CPF ou CNPJ do cliente
-   * @param userId ID do usuário logado (opcional)
-   * @returns { customer, source: 'local' | 'linked' } ou null
+   * Triagem de cliente por CPF/CNPJ com escopo de usuário.
+   * Busca apenas dentro dos clientes do próprio usuário.
+   * Retorna null se não encontrado — o chamador decide criar.
    */
   async findByCpfWithUserScope(
     cpfCnpj: string,
     userId?: string,
-  ): Promise<{ customer: any; source: 'local' | 'linked' } | null> {
+  ): Promise<{ customer: any; source: 'local' } | null> {
+    if (!userId) return null;
+
     const digits = this.onlyDigits(cpfCnpj) ?? cpfCnpj;
 
-    if (userId) {
-      // 1. Verifica se já existe vínculo UserCustomer para este usuário + CPF
-      const existingLink = await this.prisma.userCustomer.findFirst({
-        where: { userId, customer: { cpf: digits } },
-        include: { customer: { include: { tickets: true } } },
-      });
-
-      if (existingLink) {
-        return {
-          customer: this.mapCustomerResponse(existingLink.customer),
-          source: 'local',
-        };
-      }
-
-      // 2. Busca Customer global pelo CPF (qualquer registro, independente de userId)
-      const globalCustomer = await this.prisma.customer.findUnique({
-        where: { cpf: digits },
-        include: { tickets: true },
-      });
-
-      if (globalCustomer) {
-        // 3. Cria o vínculo em UserCustomer
-        await this.prisma.userCustomer.create({
-          data: { userId, customerId: globalCustomer.id },
-        });
-
-        return {
-          customer: this.mapCustomerResponse(globalCustomer),
-          source: 'linked',
-        };
-      }
-    }
-
-    // 4. Não encontrado — o chamador decide criar o cliente
-    return null;
-  }
-
-  /**
-   * Procura cliente na base global (Wintour simulado) ou cria um novo temporário.
-   * Usado quando o CPF é novo e precisa ser registrado.
-   *
-   * @param data Dados do cliente para busca/criação
-   * @returns { customer, isNew: boolean }
-   */
-  async findOrCreateGlobalCustomer(data: CreateCustomerInput): Promise<{
-    customer: any;
-    isNew: boolean;
-  }> {
-    const normalized = this.normalizeCreateInput(data);
-    const digits = this.onlyDigits(normalized.cpf) ?? normalized.cpf;
-
-    // Tenta buscar na base global
-    const existingCustomer = await this.prisma.customer.findUnique({
-      where: { cpf: digits },
-      include: { tickets: true },
-    });
-
-    if (existingCustomer) {
-      return {
-        customer: this.mapCustomerResponse(existingCustomer),
-        isNew: false,
-      };
-    }
-
-    // Se não existe, cria novo
-    const newCustomer = await this.prisma.customer.create({
-      data: normalized,
-      include: { tickets: true },
-    });
-
-    return {
-      customer: this.mapCustomerResponse(newCustomer),
-      isNew: true,
-    };
-  }
-
-  /**
-   * Vincula um cliente da base "global" (Wintour) ao usuário atual.
-   * Usado quando o cliente foi encontrado na base global e uma venda é criada.
-   *
-   * @param customerId ID do cliente global
-   * @param userId ID do usuário logado
-   * @returns Customer vinculado
-   */
-  async linkGlobalCustomerToUser(
-    customerId: string,
-    userId: string,
-  ): Promise<any> {
-    await this.prisma.userCustomer.upsert({
-      where: { userId_customerId: { userId, customerId } },
-      create: { userId, customerId },
-      update: {},
-    });
-
     const customer = await this.prisma.customer.findUnique({
-      where: { id: customerId },
+      where: { cpf_userId: { cpf: digits, userId } },
       include: { tickets: true },
     });
 
-    if (!customer) {
-      throw new NotFoundException(
-        `Cliente com id "${customerId}" nao encontrado.`,
-      );
-    }
+    if (!customer) return null;
 
-    return this.mapCustomerResponse(customer);
-  }
-
-  /**
-   * Cria novo cliente na base local do usuário E na base "global" (Wintour simulado).
-   * Garante que o cliente esteja disponível em ambas as fontes.
-   *
-   * @param data Dados do cliente
-   * @param userId ID do usuário logado (opcional)
-   * @returns { customer, createdInLocal: boolean, createdInGlobal: boolean }
-   */
-  async createCustomerInBothSources(
-    data: CreateCustomerInput,
-    userId?: string,
-  ): Promise<{
-    customer: any;
-    createdInLocal: boolean;
-    createdInGlobal: boolean;
-  }> {
-    const normalized = this.normalizeCreateInput(data);
-    const digits = this.onlyDigits(normalized.cpf) ?? normalized.cpf;
-
-    // 1. Tenta buscar cliente existente
-    const existing = await this.prisma.customer.findUnique({
-      where: { cpf: digits },
-      include: { tickets: true },
-    });
-
-    let createdInLocal = false;
-    let createdInGlobal = false;
-
-    if (existing) {
-      // Cliente já existe, apenas retorna
-      return {
-        customer: this.mapCustomerResponse(existing),
-        createdInLocal: false,
-        createdInGlobal: false,
-      };
-    }
-
-    // 2. Cria novo cliente (base local)
-    const newCustomer = await this.prisma.customer.create({
-      data: normalized,
-      include: { tickets: true },
-    });
-
-    createdInLocal = true;
-
-    // 3. TODO: Integração com API Wintour para registrar na base global
-    // Quando Wintour API estiver disponível:
-    // const wintourResult = await this.wintourSoapService.registerCustomer(normalized);
-    // createdInGlobal = !!wintourResult.success;
-
-    // Por enquanto, simulamos a criação na base global
-    createdInGlobal = true;
-
-    return {
-      customer: this.mapCustomerResponse(newCustomer),
-      createdInLocal,
-      createdInGlobal,
-    };
+    return { customer: this.mapCustomerResponse(customer), source: 'local' };
   }
 }

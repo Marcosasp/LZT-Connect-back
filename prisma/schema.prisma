@@ -26,7 +26,7 @@ model User {
   state      String
   zip_code   String
   role       Role
-  userCustomers UserCustomer[]
+  customers  Customer[]
   tickets    WintourTicket[]
 
   @@map("users")
@@ -36,6 +36,7 @@ model Customer {
   id                   String          @id @default(cuid())
   created_at           DateTime        @default(now())
   updated_at           DateTime        @updatedAt
+  userId               String          @map("user_id")
   endereco             String
   bairro               String
   cep                  String
@@ -43,15 +44,17 @@ model Customer {
   estado               String
   email                String
   nome_completo        String
-  cpf                  String          @unique
+  cpf                  String
   telefone_celular     String
   logradouro           String
   data_criacao_usuario DateTime        @default(now())
   razao_social         String?
+  user                 User            @relation(fields: [userId], references: [id])
   sales                Sale[]
   tickets              WintourTicket[]
-  userCustomers        UserCustomer[]
 
+  @@unique([cpf, userId])
+  @@index([userId])
   @@map("clientes")
 }
 
@@ -448,20 +451,6 @@ model WintourCustomerData {
 enum Role {
   ADMIN
   USER
-}
-
-model UserCustomer {
-  id         String   @id @default(cuid())
-  userId     String   @map("user_id")
-  customerId String   @map("customer_id")
-  created_at DateTime @default(now())
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, customerId])
-  @@index([userId])
-  @@index([customerId])
-  @@map("user_customers")
 }
 
 enum IntegrationStatus {

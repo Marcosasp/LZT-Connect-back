@@ -17,7 +17,7 @@ Table users {
   state String [not null]
   zip_code String [not null]
   role Role [not null]
-  userCustomers user_customers [not null]
+  customers clientes [not null]
   tickets wintour_tickets [not null]
 }
 
@@ -25,6 +25,7 @@ Table clientes {
   id String [pk]
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
+  userId String [not null]
   endereco String [not null]
   bairro String [not null]
   cep String [not null]
@@ -32,14 +33,18 @@ Table clientes {
   estado String [not null]
   email String [not null]
   nome_completo String [not null]
-  cpf String [unique, not null]
+  cpf String [not null]
   telefone_celular String [not null]
   logradouro String [not null]
   data_criacao_usuario DateTime [default: `now()`, not null]
   razao_social String
+  user users [not null]
   sales sales [not null]
   tickets wintour_tickets [not null]
-  userCustomers user_customers [not null]
+
+  indexes {
+    (cpf, userId) [unique]
+  }
 }
 
 Table sales {
@@ -385,19 +390,6 @@ Table wintour_customer_data {
   ticket wintour_tickets [not null]
 }
 
-Table user_customers {
-  id String [pk]
-  userId String [not null]
-  customerId String [not null]
-  created_at DateTime [default: `now()`, not null]
-  user users [not null]
-  customer clientes [not null]
-
-  indexes {
-    (userId, customerId) [unique]
-  }
-}
-
 Enum Role {
   ADMIN
   USER
@@ -416,6 +408,8 @@ Enum TravelType {
   ROUND_TRIP
   MULTI_CITY
 }
+
+Ref: clientes.userId > users.id
 
 Ref: sales.customerId > clientes.id
 
@@ -456,7 +450,3 @@ Ref: wintour_packages.ticket_id - wintour_tickets.id [delete: Cascade]
 Ref: wintour_other_services.ticket_id - wintour_tickets.id [delete: Cascade]
 
 Ref: wintour_customer_data.ticket_id - wintour_tickets.id [delete: Cascade]
-
-Ref: user_customers.userId > users.id [delete: Cascade]
-
-Ref: user_customers.customerId > clientes.id [delete: Cascade]

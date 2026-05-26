@@ -2321,7 +2321,7 @@ export class SalesService {
     if (customerId) {
       const existingCustomer = await this.prisma.customer.findUnique({
         where: { id: customerId },
-        select: { id: true },
+        select: { id: true, userId: true },
       });
 
       if (!existingCustomer) {
@@ -2330,22 +2330,8 @@ export class SalesService {
         );
       }
 
-      const hasLink = requestUserId
-        ? await this.prisma.userCustomer.findUnique({
-            where: {
-              userId_customerId: { userId: requestUserId, customerId },
-            },
-            select: { id: true },
-          })
-        : null;
-
-      customerSource = hasLink ? 'local' : 'global';
-
-      if (!hasLink && requestUserId) {
-        await this.prisma.userCustomer.create({
-          data: { userId: requestUserId, customerId },
-        });
-      }
+      customerSource =
+        existingCustomer.userId === requestUserId ? 'local' : 'global';
     }
 
     if (!customerId) {
@@ -2358,6 +2344,7 @@ export class SalesService {
       const customerByCpf = cpfCandidates.length
         ? await this.prisma.customer.findFirst({
             where: {
+              userId: requestUserId,
               OR: cpfCandidates.map((cpf) => ({ cpf })),
             },
             select: {
@@ -2368,27 +2355,7 @@ export class SalesService {
 
       if (customerByCpf) {
         customerId = customerByCpf.id;
-
-        const hasLink = requestUserId
-          ? await this.prisma.userCustomer.findUnique({
-              where: {
-                userId_customerId: {
-                  userId: requestUserId,
-                  customerId: customerByCpf.id,
-                },
-              },
-              select: { id: true },
-            })
-          : null;
-
-        customerSource = hasLink ? 'local' : 'global';
-
-        // Vincula cliente ao usuário atual quando ainda não existe vínculo.
-        if (!hasLink && requestUserId) {
-          await this.prisma.userCustomer.create({
-            data: { userId: requestUserId, customerId: customerByCpf.id },
-          });
-        }
+        customerSource = 'local';
       } else {
         const customerData = this.isPlainObject(saleData.customerData)
           ? saleData.customerData
@@ -2422,6 +2389,7 @@ export class SalesService {
 
         const createdCustomer = await this.prisma.customer.create({
           data: {
+            userId: requestUserId,
             nome_completo: nomeCompleto,
             razao_social:
               String(customerData.razao_social ?? '').trim() || null,
@@ -2441,12 +2409,6 @@ export class SalesService {
           },
           select: { id: true },
         });
-
-        if (requestUserId) {
-          await this.prisma.userCustomer.create({
-            data: { userId: requestUserId, customerId: createdCustomer.id },
-          });
-        }
 
         customerId = createdCustomer.id;
         customerSource = 'new';
