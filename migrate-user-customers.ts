@@ -3,39 +3,30 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🔄 Migrando vínculos customer.userId → UserCustomer...');
+  console.log('🔍 Verificando integridade: clientes sem userId...');
 
-  // Busca todos os clientes que possuem userId definido
-  const customers = await prisma.customer.findMany({
-    where: { userId: { not: null } },
-    select: { id: true, userId: true },
+  const orphans = await prisma.customer.findMany({
+    where: { userId: { equals: undefined } },
+    select: { id: true, cpf: true, nome_completo: true },
   });
 
-  console.log(`   Encontrado(s): ${customers.length} cliente(s) com userId`);
-
-  if (customers.length === 0) {
-    console.log('   Nenhum dado para migrar.');
+  if (orphans.length === 0) {
+    console.log(
+      '✅ Todos os clientes possuem userId. Nenhuma ação necessária.',
+    );
     return;
   }
 
-  // Insere todos de uma vez; skipDuplicates ignora conflitos na @@unique([userId, customerId])
-  const { count } = await prisma.userCustomer.createMany({
-    data: customers.map((c) => ({
-      userId: c.userId as string,
-      customerId: c.id,
-    })),
-    skipDuplicates: true,
-  });
-
-  const skipped = customers.length - count;
-  console.log(
-    `✅ Migração concluída: ${count} criado(s), ${skipped} já existia(m).`,
+  console.log(`⚠️  Encontrado(s) ${orphans.length} cliente(s) sem userId:`);
+  orphans.forEach((c) =>
+    console.log(`   - id=${c.id} cpf=${c.cpf} nome=${c.nome_completo}`),
   );
+  console.log('   Remova ou vincule esses registros manualmente.');
 }
 
 main()
   .catch((error) => {
-    console.error('❌ Erro durante a migração:', error.message);
+    console.error('❌ Erro:', error.message);
     process.exit(1);
   })
   .finally(() => prisma.$disconnect());
