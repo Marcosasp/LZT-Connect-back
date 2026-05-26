@@ -17,48 +17,55 @@ Table users {
   state String [not null]
   zip_code String [not null]
   role Role [not null]
+  userCustomers user_customers [not null]
   tickets wintour_tickets [not null]
-  customers clientes [not null]
 }
 
 Table clientes {
   id String [pk]
-  razao_social String
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
-  nome_completo String [not null]
-  cpf String [unique, not null]
-  email String [not null]
-  telefone_celular String [not null]
   endereco String [not null]
-  cep String [not null]
-  logradouro String [not null]
   bairro String [not null]
+  cep String [not null]
   cidade String [not null]
   estado String [not null]
+  email String [not null]
+  nome_completo String [not null]
+  cpf String [unique, not null]
+  telefone_celular String [not null]
+  logradouro String [not null]
   data_criacao_usuario DateTime [default: `now()`, not null]
-  userId String
-  user users
-  tickets wintour_tickets [not null]
+  razao_social String
   sales sales [not null]
+  tickets wintour_tickets [not null]
+  userCustomers user_customers [not null]
 }
 
 Table sales {
   id String [pk]
   created_at DateTime [default: `now()`, not null]
-  sale_date DateTime
   updated_at DateTime [not null]
   customerId String [not null]
-  customer clientes [not null]
-  userId String
-  customerSource String [not null, default: 'local']
   origin String [not null]
   destination String [not null]
   departureDate DateTime [not null]
   returnDate DateTime
   travelType TravelType [not null]
   servicesData Json
+  sale_date DateTime
+  customerSource String [not null, default: 'local']
+  userId String
+  integrationStatus IntegrationStatus [not null, default: 'pending']
+  retryCount Int [not null, default: 0]
+  lastErrorMessage String
+  lastIntegrationAt DateTime
+  integrationPayload Json
+  integrationKey String
+  integrationLogs integration_logs [not null]
   passengers passengers [not null]
+  customer clientes [not null]
+  nextRetryAt DateTime
 }
 
 Table passengers {
@@ -66,8 +73,20 @@ Table passengers {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   saleId String [not null]
-  sale sales [not null]
   fullName String [not null]
+  sale sales [not null]
+}
+
+Table integration_logs {
+  id String [pk]
+  timestamp DateTime [default: `now()`, not null]
+  saleId String [not null]
+  attempt Int [not null, default: 1]
+  status String [not null]
+  payload Json
+  response Json
+  error String
+  sale sales [not null]
 }
 
 Table wintour_headers {
@@ -79,9 +98,9 @@ Table wintour_headers {
   hora_geracao String [not null]
   nome_agencia String [not null]
   versao_xml Int [not null, default: 4]
-  integration_status String
   integration_protocol String
   integration_raw_response String
+  integration_status String
   tickets wintour_tickets [not null]
 }
 
@@ -89,12 +108,8 @@ Table wintour_tickets {
   id String [pk]
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
-  header wintour_headers
   header_id String
-  user users
   user_id String
-  customer_record clientes
-  customer_id String
   idv_externo String
   id_posto_atendimento Int
   posto_atendimento String
@@ -151,19 +166,23 @@ Table wintour_tickets {
   tipo_emissao String [default: 'E']
   co2_kg Float
   cid_dest_principal String
-  apportionments wintour_apportionments [not null]
-  sales_origins wintour_sales_origins [not null]
-  conjugates wintour_ticket_conjugates [not null]
-  values wintour_values [not null]
-  expiry_dates wintour_expiries [not null]
+  customer_id String
   air_data wintour_airs
+  apportionments wintour_apportionments [not null]
+  customer_data wintour_customer_data
+  expiry_dates wintour_expiries [not null]
   hotel_data wintour_hotels
   location_data wintour_locations
-  package_data wintour_packages
   other_services wintour_other_services
-  transfer_data wintour_transfers
-  customer_data wintour_customer_data
   wintour_other wintour_others
+  package_data wintour_packages
+  sales_origins wintour_sales_origins [not null]
+  conjugates wintour_ticket_conjugates [not null]
+  customer_record clientes
+  header wintour_headers
+  user users
+  transfer_data wintour_transfers
+  values wintour_values [not null]
 }
 
 Table wintour_apportionments {
@@ -171,9 +190,9 @@ Table wintour_apportionments {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [not null]
-  ticket wintour_tickets [not null]
   ccustos_cliente String [not null]
   percentual Float [not null]
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_sales_origins {
@@ -181,8 +200,8 @@ Table wintour_sales_origins {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [not null]
-  ticket wintour_tickets [not null]
   item Int [not null]
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_ticket_conjugates {
@@ -190,8 +209,8 @@ Table wintour_ticket_conjugates {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [not null]
-  ticket wintour_tickets [not null]
   item String [not null]
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_values {
@@ -199,11 +218,11 @@ Table wintour_values {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [not null]
-  ticket wintour_tickets [not null]
   codigo String [not null]
   valor Float [not null]
   valor_df Float
   valor_mp Float
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_expiries {
@@ -211,9 +230,9 @@ Table wintour_expiries {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [not null]
-  ticket wintour_tickets [not null]
   codigo String [not null]
   valor DateTime [not null]
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_airs {
@@ -230,7 +249,6 @@ Table wintour_sections {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   air_id String [not null]
-  air wintour_airs [not null]
   cia_iata String [not null]
   numero_voo String
   aeroporto_origem String [not null]
@@ -245,6 +263,7 @@ Table wintour_sections {
   conexao_arp_partida Int
   conexao_arp_chegada Int
   co2_kg Float
+  air wintour_airs [not null]
 }
 
 Table wintour_hotels {
@@ -252,7 +271,6 @@ Table wintour_hotels {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [unique, not null]
-  ticket wintour_tickets [not null]
   nr_apts Int
   categ_apt String
   tipo_apt String
@@ -263,6 +281,7 @@ Table wintour_hotels {
   cod_tipo_pagto String
   dt_confirmacao DateTime
   confirmado_por String
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_locations {
@@ -270,7 +289,6 @@ Table wintour_locations {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [unique, not null]
-  ticket wintour_tickets [not null]
   cidade_retirada String
   local_retirada String
   dt_retirada DateTime
@@ -282,6 +300,7 @@ Table wintour_locations {
   cod_tipo_pagto String
   dt_confirmacao DateTime
   confirmado_por String
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_others {
@@ -289,8 +308,8 @@ Table wintour_others {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [unique, not null]
-  ticket wintour_tickets [not null]
   descricao String [not null]
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_transfers {
@@ -298,7 +317,6 @@ Table wintour_transfers {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [unique, not null]
-  ticket wintour_tickets [not null]
   hotel_transfer_in String
   cia_iata_chegada String
   numero_voo_chegada String
@@ -313,6 +331,7 @@ Table wintour_transfers {
   data_partida_voo DateTime
   hora_partida_voo String
   aeroporto_partida String
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_packages {
@@ -320,11 +339,11 @@ Table wintour_packages {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [unique, not null]
-  ticket wintour_tickets [not null]
   cid_dest_principal String
   data_inicio_pacote DateTime
   data_fim_pacote DateTime
   descricao_pacote String
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_other_services {
@@ -332,11 +351,11 @@ Table wintour_other_services {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [unique, not null]
-  ticket wintour_tickets [not null]
   cid_dest_principal String
   data_inicio_outros_svcs DateTime
   data_fim_outros_svcs DateTime
   descricao_outros_svcs String
+  ticket wintour_tickets [not null]
 }
 
 Table wintour_customer_data {
@@ -344,7 +363,6 @@ Table wintour_customer_data {
   created_at DateTime [default: `now()`, not null]
   updated_at DateTime [not null]
   ticket_id String [unique, not null]
-  ticket wintour_tickets [not null]
   acao_cli String
   razao_social String
   tipo_endereco String
@@ -364,11 +382,33 @@ Table wintour_customer_data {
   sexo String
   dt_cadastro DateTime
   email String
+  ticket wintour_tickets [not null]
+}
+
+Table user_customers {
+  id String [pk]
+  userId String [not null]
+  customerId String [not null]
+  created_at DateTime [default: `now()`, not null]
+  user users [not null]
+  customer clientes [not null]
+
+  indexes {
+    (userId, customerId) [unique]
+  }
 }
 
 Enum Role {
   ADMIN
   USER
+}
+
+Enum IntegrationStatus {
+  pending
+  processing
+  success
+  error
+  manual_pending
 }
 
 Enum TravelType {
@@ -377,17 +417,17 @@ Enum TravelType {
   MULTI_CITY
 }
 
-Ref: clientes.userId > users.id [delete: Set Null]
-
 Ref: sales.customerId > clientes.id
 
 Ref: passengers.saleId > sales.id [delete: Cascade]
 
+Ref: integration_logs.saleId > sales.id [delete: Cascade]
+
+Ref: wintour_tickets.customer_id > clientes.id
+
 Ref: wintour_tickets.header_id > wintour_headers.id [delete: Cascade]
 
 Ref: wintour_tickets.user_id > users.id
-
-Ref: wintour_tickets.customer_id > clientes.id
 
 Ref: wintour_apportionments.ticket_id > wintour_tickets.id [delete: Cascade]
 
@@ -416,3 +456,7 @@ Ref: wintour_packages.ticket_id - wintour_tickets.id [delete: Cascade]
 Ref: wintour_other_services.ticket_id - wintour_tickets.id [delete: Cascade]
 
 Ref: wintour_customer_data.ticket_id - wintour_tickets.id [delete: Cascade]
+
+Ref: user_customers.userId > users.id [delete: Cascade]
+
+Ref: user_customers.customerId > clientes.id [delete: Cascade]

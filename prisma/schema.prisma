@@ -1,8 +1,3 @@
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,11 +6,16 @@ generator dbml {
   provider = "prisma-dbml-generator"
 }
 
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
 model User {
-  id         String   @id @default(cuid())
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-  email      String   @unique
+  id         String          @id @default(cuid())
+  created_at DateTime        @default(now())
+  updated_at DateTime        @updatedAt
+  email      String          @unique
   password   String
   firstname  String
   lastname   String
@@ -26,58 +26,67 @@ model User {
   state      String
   zip_code   String
   role       Role
+  userCustomers UserCustomer[]
   tickets    WintourTicket[]
-  customers  Customer[]
 
   @@map("users")
 }
 
 model Customer {
   id                   String          @id @default(cuid())
-  razao_social         String?
   created_at           DateTime        @default(now())
   updated_at           DateTime        @updatedAt
-  nome_completo        String
-  cpf                  String          @unique
-  email                String
-  telefone_celular     String
   endereco             String
-  cep                  String
-  logradouro           String
   bairro               String
+  cep                  String
   cidade               String
   estado               String
+  email                String
+  nome_completo        String
+  cpf                  String          @unique
+  telefone_celular     String
+  logradouro           String
   data_criacao_usuario DateTime        @default(now())
-  userId               String?         @map("user_id")
-  user                 User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
-  tickets              WintourTicket[]
+  razao_social         String?
   sales                Sale[]
+  tickets              WintourTicket[]
+  userCustomers        UserCustomer[]
 
-  @@index([userId])
   @@map("clientes")
 }
 
 model Sale {
-  id              String      @id @default(cuid())
-  created_at      DateTime    @default(now())
-  sale_date       DateTime?   @map("sale_date")
-  updated_at      DateTime    @updatedAt
-  customerId      String      @map("customer_id")
-  customer        Customer    @relation(fields: [customerId], references: [id])
-  userId          String?     @map("user_id")
-  customerSource  String      @default("local") @map("customer_source") // 'local' | 'global' (Wintour)
-  origin          String
-  destination     String
-  departureDate   DateTime    @map("departure_date")
-  returnDate      DateTime?   @map("return_date")
-  travelType      TravelType  @map("travel_type")
-  servicesData    Json?       @map("services_data")
-  passengers      Passenger[]
+  id                 String            @id @default(cuid())
+  created_at         DateTime          @default(now())
+  updated_at         DateTime          @updatedAt
+  customerId         String            @map("customer_id")
+  origin             String
+  destination        String
+  departureDate      DateTime          @map("departure_date")
+  returnDate         DateTime?         @map("return_date")
+  travelType         TravelType        @map("travel_type")
+  servicesData       Json?             @map("services_data")
+  sale_date          DateTime?         @map("sale_date")
+  customerSource     String            @default("local") @map("customer_source")
+  userId             String?           @map("user_id")
+  integrationStatus  IntegrationStatus @default(pending) @map("integration_status")
+  retryCount         Int               @default(0) @map("retry_count")
+  lastErrorMessage   String?           @map("last_error_message")
+  lastIntegrationAt  DateTime?         @map("last_integration_at")
+  integrationPayload Json?             @map("integration_payload")
+  integrationKey     String?           @map("integration_key")
+  integrationLogs    IntegrationLog[]
+  passengers         Passenger[]
+  customer           Customer          @relation(fields: [customerId], references: [id])
+  nextRetryAt        DateTime?         @map("next_retry_at")
 
   @@index([customerId])
   @@index([sale_date])
   @@index([userId])
   @@index([customerSource])
+  @@index([integrationStatus])
+  @@index([integrationKey])
+  @@index([integrationPayload], map: "idx_sales_integration_payload", type: Gin)
   @@map("sales")
 }
 
@@ -86,11 +95,26 @@ model Passenger {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
   saleId     String   @map("sale_id")
-  sale       Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
   fullName   String   @map("full_name")
+  sale       Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
 
   @@index([saleId])
   @@map("passengers")
+}
+
+model IntegrationLog {
+  id        String   @id @default(cuid())
+  timestamp DateTime @default(now())
+  saleId    String   @map("sale_id")
+  attempt   Int      @default(1)
+  status    String
+  payload   Json?
+  response  Json?
+  error     String?
+  sale      Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  @@index([saleId, timestamp(sort: Desc)], map: "integration_logs_sale_id_timestamp_idx")
+  @@map("integration_logs")
 }
 
 model WintourHeader {
@@ -102,100 +126,93 @@ model WintourHeader {
   hora_geracao             String
   nome_agencia             String
   versao_xml               Int             @default(4)
-  integration_status       String?         @map("integration_status")
   integration_protocol     String?         @map("integration_protocol")
-  integration_raw_response String?         @db.Text @map("integration_raw_response")
+  integration_raw_response String?         @map("integration_raw_response")
+  integration_status       String?         @map("integration_status")
   tickets                  WintourTicket[]
 
   @@map("wintour_headers")
 }
 
 model WintourTicket {
-  id         String   @id @default(cuid())
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  header    WintourHeader? @relation(fields: [header_id], references: [id], onDelete: Cascade)
-  header_id String?        @map("header_id")
-
-  user    User?   @relation(fields: [user_id], references: [id])
-  user_id String? @map("user_id")
-
-  customer_record    Customer? @relation(fields: [customer_id], references: [id])
-  customer_id        String?   @map("customer_id")
-
-  // Campos principais do Bilhete
-  idv_externo              String?
-  id_posto_atendimento     Int?
-  posto_atendimento        String?
-  dt_interna_cadastro      DateTime?
-  data_lancamento          DateTime?
-  codigo_produto           String?
-  fornecedor               String?
-  prestador_svc            String?
-  num_bilhete              String?
-  localizador              String?
-  tour_code                String?
-  forma_de_pagamento       String?
-  cartao_mp                String?
-  cartao_cp                String?
-  conta_taxas_adicionais   String?
-  conta_taxas_adicionais2  String?
-  cod_outras_txs           String?
-  cod_outras_txs2          String?
-  cod_outras_txs3          String?
-  cta_tx_emissao           String?
-  ccustos_agencia          String?
-  moeda                    String?   @default("BRL")
-  emissor                  String?
-  promotor                 String?
-  gerente                  String?
-  cliente                  String?
-  ccustos_cliente          String?
-  numero_requisicao        String?
-  data_requisicao          DateTime?
-  passageiro               String?
-  tipo_passageiro          String?
-  solicitante              String?
-  aprovador                String?
-  departamento             String?
-  matricula                String?
-  num_cc                   String?
-  cod_autorizacao_cc       String?
-  tipo_domest_inter        String?   @default("D")
-  scdp                     String?
-  info_adicionais          String?
-  info_internas            String?
-  canal_captacao           String?
-  cta_du_rav               String?   @default("TX-DU")
-  situacao_contabil        String?
-  projeto                  String?
-  motivo_viagem            String?
-  motivo_recusa            String?
-  tipo_roteiro_aereo       String?
-  destino_rot_aereo        String?
-  canal_venda              String?
-  multi_ccustos_cli        String?
-  tipo_roteiro             Int?
-  tarifa_net               Int?
-  tipo_emissao             String?   @default("E")
-  co2_kg                   Float?
-  cid_dest_principal       String?
-
-  // Relacionamentos
-  apportionments WintourApportionment[]
-  sales_origins  WintourSalesOrigin[]
-  conjugates     WintourTicketConjugate[]
-  values         WintourValue[]
-  expiry_dates   WintourExpiry[]
-  air_data       WintourAir?
-  hotel_data     WintourHotel?
-  location_data  WintourLocation?
-  package_data   WintourPackage?
-  other_services WintourOtherService?
-  transfer_data  WintourTransfer?
-  customer_data  WintourCustomerData?
-  wintour_other  WintourOther?
+  id                      String                   @id @default(cuid())
+  created_at              DateTime                 @default(now())
+  updated_at              DateTime                 @updatedAt
+  header_id               String?                  @map("header_id")
+  user_id                 String?                  @map("user_id")
+  idv_externo             String?
+  id_posto_atendimento    Int?
+  posto_atendimento       String?
+  dt_interna_cadastro     DateTime?
+  data_lancamento         DateTime?
+  codigo_produto          String?
+  fornecedor              String?
+  prestador_svc           String?
+  num_bilhete             String?
+  localizador             String?
+  tour_code               String?
+  forma_de_pagamento      String?
+  cartao_mp               String?
+  cartao_cp               String?
+  conta_taxas_adicionais  String?
+  conta_taxas_adicionais2 String?
+  cod_outras_txs          String?
+  cod_outras_txs2         String?
+  cod_outras_txs3         String?
+  cta_tx_emissao          String?
+  ccustos_agencia         String?
+  moeda                   String?                  @default("BRL")
+  emissor                 String?
+  promotor                String?
+  gerente                 String?
+  cliente                 String?
+  ccustos_cliente         String?
+  numero_requisicao       String?
+  data_requisicao         DateTime?
+  passageiro              String?
+  tipo_passageiro         String?
+  solicitante             String?
+  aprovador               String?
+  departamento            String?
+  matricula               String?
+  num_cc                  String?
+  cod_autorizacao_cc      String?
+  tipo_domest_inter       String?                  @default("D")
+  scdp                    String?
+  info_adicionais         String?
+  info_internas           String?
+  canal_captacao          String?
+  cta_du_rav              String?                  @default("TX-DU")
+  situacao_contabil       String?
+  projeto                 String?
+  motivo_viagem           String?
+  motivo_recusa           String?
+  tipo_roteiro_aereo      String?
+  destino_rot_aereo       String?
+  canal_venda             String?
+  multi_ccustos_cli       String?
+  tipo_roteiro            Int?
+  tarifa_net              Int?
+  tipo_emissao            String?                  @default("E")
+  co2_kg                  Float?
+  cid_dest_principal      String?
+  customer_id             String?                  @map("customer_id")
+  air_data                WintourAir?
+  apportionments          WintourApportionment[]
+  customer_data           WintourCustomerData?
+  expiry_dates            WintourExpiry[]
+  hotel_data              WintourHotel?
+  location_data           WintourLocation?
+  other_services          WintourOtherService?
+  wintour_other           WintourOther?
+  package_data            WintourPackage?
+  sales_origins           WintourSalesOrigin[]
+  conjugates              WintourTicketConjugate[]
+  customer_record         Customer?                @relation(fields: [customer_id], references: [id])
+  header                  WintourHeader?           @relation(fields: [header_id], references: [id], onDelete: Cascade)
+  user                    User?                    @relation(fields: [user_id], references: [id])
+  transfer_data           WintourTransfer?
+  values                  WintourValue[]
 
   @@map("wintour_tickets")
 }
@@ -205,9 +222,9 @@ model WintourApportionment {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   ccustos_cliente String
   percentual      Float
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_apportionments")
 }
@@ -217,8 +234,8 @@ model WintourSalesOrigin {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   item       Int
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_sales_origins")
 }
@@ -228,8 +245,8 @@ model WintourTicketConjugate {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   item       String
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_ticket_conjugates")
 }
@@ -239,11 +256,11 @@ model WintourValue {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   codigo     String
   valor      Float
   valor_df   Float?
   valor_mp   Float?
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_values")
 }
@@ -253,9 +270,9 @@ model WintourExpiry {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   codigo     String
   valor      DateTime
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_expiries")
 }
@@ -276,7 +293,6 @@ model WintourSection {
   created_at          DateTime   @default(now())
   updated_at          DateTime   @updatedAt
   air_id              String     @map("air_id")
-  air                 WintourAir @relation(fields: [air_id], references: [id], onDelete: Cascade)
   cia_iata            String
   numero_voo          String?
   aeroporto_origem    String
@@ -291,6 +307,7 @@ model WintourSection {
   conexao_arp_partida Int?
   conexao_arp_chegada Int?
   co2_kg              Float?
+  air                 WintourAir @relation(fields: [air_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_sections")
 }
@@ -300,7 +317,6 @@ model WintourHotel {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @unique @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   nr_apts         Int?
   categ_apt       String?
   tipo_apt        String?
@@ -311,6 +327,7 @@ model WintourHotel {
   cod_tipo_pagto  String?
   dt_confirmacao  DateTime?
   confirmado_por  String?
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_hotels")
 }
@@ -320,7 +337,6 @@ model WintourLocation {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @unique @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   cidade_retirada String?
   local_retirada  String?
   dt_retirada     DateTime?
@@ -332,6 +348,7 @@ model WintourLocation {
   cod_tipo_pagto  String?
   dt_confirmacao  DateTime?
   confirmado_por  String?
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_locations")
 }
@@ -341,28 +358,23 @@ model WintourOther {
   created_at DateTime      @default(now())
   updated_at DateTime      @updatedAt
   ticket_id  String        @unique @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   descricao  String
+  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_others")
 }
 
 model WintourTransfer {
-  id         String        @id @default(cuid())
-  created_at DateTime      @default(now())
-  updated_at DateTime      @updatedAt
-  ticket_id  String        @unique @map("ticket_id")
-  ticket     WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
-
-  // In
+  id                 String        @id @default(cuid())
+  created_at         DateTime      @default(now())
+  updated_at         DateTime      @updatedAt
+  ticket_id          String        @unique @map("ticket_id")
   hotel_transfer_in  String?
   cia_iata_chegada   String?
   numero_voo_chegada String?
   data_chegada_voo   DateTime?
   hora_chegada_voo   String?
   aeroporto_chegada  String?
-
-  // Out
   hotel_transfer_out String?
   data_apanhar_pax   DateTime?
   hora_apanhar_pax   String?
@@ -371,6 +383,7 @@ model WintourTransfer {
   data_partida_voo   DateTime?
   hora_partida_voo   String?
   aeroporto_partida  String?
+  ticket             WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_transfers")
 }
@@ -380,11 +393,11 @@ model WintourPackage {
   created_at         DateTime      @default(now())
   updated_at         DateTime      @updatedAt
   ticket_id          String        @unique @map("ticket_id")
-  ticket             WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   cid_dest_principal String?
   data_inicio_pacote DateTime?
   data_fim_pacote    DateTime?
   descricao_pacote   String?
+  ticket             WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_packages")
 }
@@ -394,11 +407,11 @@ model WintourOtherService {
   created_at              DateTime      @default(now())
   updated_at              DateTime      @updatedAt
   ticket_id               String        @unique @map("ticket_id")
-  ticket                  WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   cid_dest_principal      String?
   data_inicio_outros_svcs DateTime?
   data_fim_outros_svcs    DateTime?
   descricao_outros_svcs   String?
+  ticket                  WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_other_services")
 }
@@ -408,7 +421,6 @@ model WintourCustomerData {
   created_at      DateTime      @default(now())
   updated_at      DateTime      @updatedAt
   ticket_id       String        @unique @map("ticket_id")
-  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
   acao_cli        String?
   razao_social    String?
   tipo_endereco   String?
@@ -428,6 +440,7 @@ model WintourCustomerData {
   sexo            String?
   dt_cadastro     DateTime?
   email           String?
+  ticket          WintourTicket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
 
   @@map("wintour_customer_data")
 }
@@ -435,6 +448,28 @@ model WintourCustomerData {
 enum Role {
   ADMIN
   USER
+}
+
+model UserCustomer {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  customerId String   @map("customer_id")
+  created_at DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, customerId])
+  @@index([userId])
+  @@index([customerId])
+  @@map("user_customers")
+}
+
+enum IntegrationStatus {
+  pending
+  processing
+  success
+  error
+  manual_pending
 }
 
 enum TravelType {

@@ -1,7 +1,7 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from 'nestjs-prisma';
-import { Prisma } from '@prisma/client';
 import { CustomersService } from './customers.service';
 
 describe('CustomersService', () => {
@@ -14,8 +14,13 @@ describe('CustomersService', () => {
       findMany: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
-      delete: jest.fn(),
       count: jest.fn(),
+    },
+    userCustomer: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
+      upsert: jest.fn(),
+      delete: jest.fn(),
     },
   };
 
@@ -152,6 +157,8 @@ describe('CustomersService', () => {
         telefone_celular: undefined,
         cpf: undefined,
         razao_social: undefined,
+        _count: { sales: 4 },
+        userCustomers: [{ created_at: new Date('2026-04-10T00:00:00.000Z') }],
       },
       {
         id: 'customer-2',
@@ -159,6 +166,8 @@ describe('CustomersService', () => {
         telefone_celular: undefined,
         cpf: undefined,
         razao_social: undefined,
+        _count: { sales: 1 },
+        userCustomers: [{ created_at: new Date('2026-04-12T00:00:00.000Z') }],
       },
     ];
     const total = 22;
@@ -169,17 +178,28 @@ describe('CustomersService', () => {
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
     );
 
-    const result = await service.findAll(2, 10);
+    const result = await service.findAll(2, 10, undefined, 'user-1');
 
     expect(mockPrismaService.customer.findMany).toHaveBeenCalledWith({
+      where: { userCustomers: { some: { userId: 'user-1' } } },
       orderBy: { data_criacao_usuario: 'desc' },
+      include: {
+        _count: {
+          select: { sales: true },
+        },
+        userCustomers: {
+          where: { userId: 'user-1' },
+          select: { created_at: true },
+          take: 1,
+        },
+      },
       skip: 10,
       take: 10,
     });
     expect(mockPrismaService.customer.count).toHaveBeenCalledTimes(1);
     expect(mockPrismaService.$transaction).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
-      data: rawData.map((c) => ({
+      data: rawData.map(({ userCustomers, _count, ...c }) => ({
         ...c,
         nome: c.nome_completo,
         nomeCompleto: c.nome_completo,
@@ -187,6 +207,8 @@ describe('CustomersService', () => {
         tel: c.telefone_celular,
         celular: c.telefone_celular,
         cpf_cnpj: c.cpf,
+        user_customer_created_at: userCustomers[0]?.created_at,
+        sales_count: _count.sales,
       })),
       meta: { total: 22, page: 2, lastPage: 3 },
     });
@@ -200,6 +222,8 @@ describe('CustomersService', () => {
         telefone_celular: undefined,
         cpf: undefined,
         razao_social: undefined,
+        _count: { sales: 2 },
+        userCustomers: [{ created_at: new Date('2026-04-10T00:00:00.000Z') }],
       },
     ];
     const total = 1;
@@ -210,15 +234,26 @@ describe('CustomersService', () => {
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
     );
 
-    const result = await service.findAll();
+    const result = await service.findAll(1, 10, undefined, 'user-1');
 
     expect(mockPrismaService.customer.findMany).toHaveBeenCalledWith({
+      where: { userCustomers: { some: { userId: 'user-1' } } },
       orderBy: { data_criacao_usuario: 'desc' },
+      include: {
+        _count: {
+          select: { sales: true },
+        },
+        userCustomers: {
+          where: { userId: 'user-1' },
+          select: { created_at: true },
+          take: 1,
+        },
+      },
       skip: 0,
       take: 10,
     });
     expect(result).toEqual({
-      data: rawData.map((c) => ({
+      data: rawData.map(({ userCustomers, _count, ...c }) => ({
         ...c,
         nome: c.nome_completo,
         nomeCompleto: c.nome_completo,
@@ -226,6 +261,8 @@ describe('CustomersService', () => {
         tel: c.telefone_celular,
         celular: c.telefone_celular,
         cpf_cnpj: c.cpf,
+        user_customer_created_at: userCustomers[0]?.created_at,
+        sales_count: _count.sales,
       })),
       meta: { total: 1, page: 1, lastPage: 1 },
     });
@@ -285,28 +322,35 @@ describe('CustomersService', () => {
     ).rejects.toThrow(NotFoundException);
   });
 
-  it('should delete customer by id and return success message', async () => {
-    mockPrismaService.customer.delete.mockResolvedValue({ id: 'customer-1' });
-
-    const result = await service.remove('customer-1');
-
-    expect(mockPrismaService.customer.delete).toHaveBeenCalledWith({
-      where: { id: 'customer-1' },
+  it('should unlink customer from user and return success message', async () => {
+    mockPrismaService.userCustomer.delete.mockResolvedValue({
+      userId: 'user-1',
+      customerId: 'customer-1',
     });
-    expect(result).toEqual({ message: 'Cliente removido com sucesso.' });
+
+    const result = await service.unlinkFromUser('customer-1', 'user-1');
+
+    expect(mockPrismaService.userCustomer.delete).toHaveBeenCalledWith({
+      where: {
+        userId_customerId: { userId: 'user-1', customerId: 'customer-1' },
+      },
+    });
+    expect(result).toEqual({
+      message: 'Cliente removido da sua lista com sucesso.',
+    });
   });
 
-  it('should throw NotFoundException when deleting non-existing customer', async () => {
-    mockPrismaService.customer.delete.mockRejectedValue(
+  it('should throw NotFoundException when unlinking non-existing link', async () => {
+    mockPrismaService.userCustomer.delete.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('not found', {
         code: 'P2025',
         clientVersion: 'test',
       }),
     );
 
-    await expect(service.remove('missing-id')).rejects.toThrow(
-      NotFoundException,
-    );
+    await expect(
+      service.unlinkFromUser('missing-id', 'user-1'),
+    ).rejects.toThrow(NotFoundException);
   });
 
   it('should search customers with filters and paginated response', async () => {
@@ -327,16 +371,21 @@ describe('CustomersService', () => {
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
     );
 
-    const result = await service.search({
-      nome: 'maria',
-      email: 'lzt.com',
-      cpf: '52998224725',
-      page: 2,
-      limit: 5,
-    });
+    const result = await service.search(
+      {
+        nome: 'maria',
+        email: 'lzt.com',
+        cpf: '52998224725',
+        page: 2,
+        limit: 5,
+      },
+      undefined,
+      'user-1',
+    );
 
     expect(mockPrismaService.customer.findMany).toHaveBeenCalledWith({
       where: {
+        userCustomers: { some: { userId: 'user-1' } },
         nome_completo: { contains: 'maria', mode: 'insensitive' },
         email: { contains: 'lzt.com', mode: 'insensitive' },
         cpf: '52998224725',
@@ -347,6 +396,7 @@ describe('CustomersService', () => {
     });
     expect(mockPrismaService.customer.count).toHaveBeenCalledWith({
       where: {
+        userCustomers: { some: { userId: 'user-1' } },
         nome_completo: { contains: 'maria', mode: 'insensitive' },
         email: { contains: 'lzt.com', mode: 'insensitive' },
         cpf: '52998224725',
@@ -385,12 +435,11 @@ describe('CustomersService', () => {
       async (operations: Array<Promise<unknown>>) => Promise.all(operations),
     );
 
-    const result = await service.search({
-      nome: 'joao',
-    });
+    const result = await service.search({ nome: 'joao' }, undefined, 'user-1');
 
     expect(mockPrismaService.customer.findMany).toHaveBeenCalledWith({
       where: {
+        userCustomers: { some: { userId: 'user-1' } },
         nome_completo: { contains: 'joao', mode: 'insensitive' },
       },
       orderBy: { data_criacao_usuario: 'desc' },
@@ -399,6 +448,7 @@ describe('CustomersService', () => {
     });
     expect(mockPrismaService.customer.count).toHaveBeenCalledWith({
       where: {
+        userCustomers: { some: { userId: 'user-1' } },
         nome_completo: { contains: 'joao', mode: 'insensitive' },
       },
     });
@@ -413,6 +463,18 @@ describe('CustomersService', () => {
         cpf_cnpj: c.cpf,
       })),
       meta: { total: 3, page: 1, lastPage: 1 },
+    });
+  });
+
+  it('should return empty search result when userId is not provided', async () => {
+    const result = await service.search({ nome: 'maria', page: 2, limit: 5 });
+
+    expect(mockPrismaService.customer.findMany).not.toHaveBeenCalled();
+    expect(mockPrismaService.customer.count).not.toHaveBeenCalled();
+    expect(mockPrismaService.$transaction).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      data: [],
+      meta: { total: 0, page: 2, lastPage: 1 },
     });
   });
 });

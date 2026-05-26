@@ -3,6 +3,7 @@ export interface Config {
   cors: CorsConfig;
   swagger: SwaggerConfig;
   security: SecurityConfig;
+  wintourRetry: WintourRetryConfig;
 }
 
 export interface NestConfig {
@@ -25,4 +26,10 @@ export interface SecurityConfig {
   expiresIn: string;
   refreshIn: string;
   bcryptSaltOrRound: string | number;
+}
+
+export interface WintourRetryConfig {
+  enabled: boolean;
+  maxRetries: number;
+  maxSalesPerCycle: number;
 }

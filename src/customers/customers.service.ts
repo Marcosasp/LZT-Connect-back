@@ -52,7 +52,7 @@ export class CustomersService {
 
   private normalizeCreateInput(
     data: CreateCustomerInput,
-  ): Prisma.CustomerCreateInput {
+  ): Prisma.CustomerUncheckedCreateInput {
     const nomeCompletoValue =
       data.nome ?? data.nomeCompleto ?? data.nome_completo ?? data.razao_social;
     const nomeCompleto = nomeCompletoValue?.trim() ?? '';
@@ -150,11 +150,20 @@ export class CustomersService {
     };
   }
 
-  async create(data: CreateCustomerInput) {
+  async create(data: CreateCustomerInput, userId?: string) {
     try {
-      return await this.prisma.customer.create({
+      const customer = await this.prisma.customer.create({
         data: this.normalizeCreateInput(data),
       });
+
+      // Cria o vínculo UserCustomer se um usuário estiver autenticado
+      if (userId) {
+        await this.prisma.userCustomer.create({
+          data: { userId, customerId: customer.id },
+        });
+      }
+
+      return customer;
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -167,22 +176,49 @@ export class CustomersService {
     }
   }
 
-  async findAll(page = 1, limit = 10, order?: string) {
+  async findAll(page = 1, limit = 10, order?: string, userId?: string) {
+    // Segurança: nunca expor clientes de outros usuários.
+    if (!userId) {
+      const lastPage = 1;
+      return { data: [], meta: { total: 0, page, lastPage } };
+    }
+
     const prismaOrder = this.getPrismaOrder(order);
     const skip = (page - 1) * limit;
+    const where: Prisma.CustomerWhereInput = {
+      userCustomers: { some: { userId } },
+    };
 
     const [customers, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
+        where,
         orderBy: { data_criacao_usuario: prismaOrder },
+        include: {
+          _count: {
+            select: { sales: true },
+          },
+          userCustomers: {
+            where: { userId },
+            select: { created_at: true },
+            take: 1,
+          },
+        },
         skip,
         take: limit,
       }),
-      this.prisma.customer.count(),
+      this.prisma.customer.count({ where }),
     ]);
 
-    const data = customers.map((customer) =>
-      this.mapCustomerResponse(customer),
-    );
+    const data = customers.map((customer) => {
+      const { userCustomers, _count, ...customerData } = customer;
+      const linkedAt = userCustomers[0]?.created_at;
+
+      return {
+        ...this.mapCustomerResponse(customerData),
+        user_customer_created_at: linkedAt,
+        sales_count: _count.sales,
+      };
+    });
 
     const lastPage = Math.ceil(total / limit);
 
@@ -263,23 +299,33 @@ export class CustomersService {
     }
   }
 
-  async remove(id: string) {
+  async unlinkFromUser(customerId: string, userId: string) {
     try {
-      await this.prisma.customer.delete({ where: { id } });
-      return { message: 'Cliente removido com sucesso.' };
+      await this.prisma.userCustomer.delete({
+        where: { userId_customerId: { userId, customerId } },
+      });
+      return { message: 'Cliente removido da sua lista com sucesso.' };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2025'
       ) {
-        throw new NotFoundException(`Cliente com id "${id}" não encontrado.`);
+        throw new NotFoundException(
+          `Vínculo com cliente "${customerId}" não encontrado.`,
+        );
       }
 
       throw error;
     }
   }
 
-  async search(filters: FilterCustomerDto, order = 'desc') {
+  async search(filters: FilterCustomerDto, order = 'desc', userId?: string) {
+    // Segurança: nunca expor clientes de outros usuários.
+    if (!userId) {
+      const page = filters.page ?? 1;
+      return { data: [], meta: { total: 0, page, lastPage: 1 } };
+    }
+
     const { nome, email, cpf, page = 1, limit = 10 } = filters;
     const rawOrder =
       order ??
@@ -291,6 +337,8 @@ export class CustomersService {
     const prismaOrder = this.getPrismaOrder(rawOrder);
 
     const where: Prisma.CustomerWhereInput = {
+      // Segurança: restringe sempre ao usuário logado via UserCustomer.
+      userCustomers: { some: { userId } },
       ...(nome && {
         nome_completo: { contains: nome, mode: 'insensitive' },
       }),
@@ -321,50 +369,58 @@ export class CustomersService {
   }
 
   /**
-   * Busca cliente por CPF/CNPJ com escopo de usuário.
-   * Primeiro procura nos clientes do usuário logado.
-   * Se não encontrar, busca na base "global" (simulação Wintour).
+   * Triagem de cliente por CPF/CNPJ com escopo de usuário via tabela pivot UserCustomer.
+   *
+   * Fluxo:
+   * 1. Verifica se existe vínculo UserCustomer para o usuário + CPF.
+   * 2. Se não, busca Customer global pelo CPF.
+   * 3. Se encontrar, cria o vínculo em UserCustomer.
+   * 4. Se não encontrar, retorna null.
    *
    * @param cpfCnpj CPF ou CNPJ do cliente
    * @param userId ID do usuário logado (opcional)
-   * @returns { customer, source: 'local' | 'global' }
+   * @returns { customer, source: 'local' | 'linked' } ou null
    */
   async findByCpfWithUserScope(
     cpfCnpj: string,
     userId?: string,
-  ): Promise<{ customer: any; source: 'local' | 'global' } | null> {
+  ): Promise<{ customer: any; source: 'local' | 'linked' } | null> {
     const digits = this.onlyDigits(cpfCnpj) ?? cpfCnpj;
 
-    // 1. Busca na base local do usuário (vinculado pelo user_id)
     if (userId) {
-      const localCustomer = await this.prisma.customer.findFirst({
-        where: { cpf: digits, userId },
+      // 1. Verifica se já existe vínculo UserCustomer para este usuário + CPF
+      const existingLink = await this.prisma.userCustomer.findFirst({
+        where: { userId, customer: { cpf: digits } },
+        include: { customer: { include: { tickets: true } } },
+      });
+
+      if (existingLink) {
+        return {
+          customer: this.mapCustomerResponse(existingLink.customer),
+          source: 'local',
+        };
+      }
+
+      // 2. Busca Customer global pelo CPF (qualquer registro, independente de userId)
+      const globalCustomer = await this.prisma.customer.findUnique({
+        where: { cpf: digits },
         include: { tickets: true },
       });
 
-      if (localCustomer) {
+      if (globalCustomer) {
+        // 3. Cria o vínculo em UserCustomer
+        await this.prisma.userCustomer.create({
+          data: { userId, customerId: globalCustomer.id },
+        });
+
         return {
-          customer: this.mapCustomerResponse(localCustomer),
-          source: 'local',
+          customer: this.mapCustomerResponse(globalCustomer),
+          source: 'linked',
         };
       }
     }
 
-    // 2. Busca na base "global" (Wintour simulado — clientes sem vínculo de usuário)
-    // findFirst para não lançar erro quando o CPF não existe
-    const globalCustomer = await this.prisma.customer.findFirst({
-      where: { cpf: digits },
-      include: { tickets: true },
-    });
-
-    if (globalCustomer) {
-      return {
-        customer: this.mapCustomerResponse(globalCustomer),
-        source: 'global',
-      };
-    }
-
-    // Retorna null para que o chamador decida criar o cliente
+    // 4. Não encontrado — o chamador decide criar o cliente
     return null;
   }
 
@@ -419,13 +475,24 @@ export class CustomersService {
     customerId: string,
     userId: string,
   ): Promise<any> {
-    const linked = await this.prisma.customer.update({
+    await this.prisma.userCustomer.upsert({
+      where: { userId_customerId: { userId, customerId } },
+      create: { userId, customerId },
+      update: {},
+    });
+
+    const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
-      data: { userId },
       include: { tickets: true },
     });
 
-    return this.mapCustomerResponse(linked);
+    if (!customer) {
+      throw new NotFoundException(
+        `Cliente com id "${customerId}" nao encontrado.`,
+      );
+    }
+
+    return this.mapCustomerResponse(customer);
   }
 
   /**

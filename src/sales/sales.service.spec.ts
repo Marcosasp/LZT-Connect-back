@@ -1,9 +1,11 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from 'nestjs-prisma';
 import { SalesService } from './sales.service';
 import { CustomersService } from '../customers/customers.service';
 import { WintourSoapService } from './wintour-soap.service';
+import { IntegrationLogService } from './integration-log.service';
 
 describe('SalesService', () => {
   let service: SalesService;
@@ -21,9 +23,13 @@ describe('SalesService', () => {
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       delete: jest.fn(),
       count: jest.fn(),
+      groupBy: jest.fn(),
+      aggregate: jest.fn(),
     },
     passenger: {
       deleteMany: jest.fn(),
@@ -42,6 +48,19 @@ describe('SalesService', () => {
     importarArquivo2: jest.fn(),
   };
 
+  const mockConfigService = {
+    get: jest.fn().mockReturnValue({
+      enabled: true,
+      maxRetries: 5,
+      maxSalesPerCycle: 10,
+    }),
+  };
+
+  const mockIntegrationLogService = {
+    create: jest.fn().mockResolvedValue({}),
+    findBySaleId: jest.fn().mockResolvedValue([]),
+  };
+
   const mockFetch = jest.fn();
 
   beforeEach(async () => {
@@ -56,6 +75,8 @@ describe('SalesService', () => {
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: CustomersService, useValue: mockCustomersService },
         { provide: WintourSoapService, useValue: mockWintourSoapService },
+        { provide: ConfigService, useValue: mockConfigService },
+        { provide: IntegrationLogService, useValue: mockIntegrationLogService },
       ],
     }).compile();
 
@@ -207,13 +228,18 @@ describe('SalesService', () => {
         passengers: [{ id: 'passenger-1', fullName: 'Maria Silva' }],
       };
 
-      // findAll calls: findMany (allSales select), count, findMany (representativeRows include)
+      // findAll calls: findMany (allSales), count (summaryRawTotal), findMany (summaryRawStatuses), findMany (representativeRows)
       mockPrismaService.sale.findMany
-        .mockResolvedValueOnce([mockSaleRow])
-        .mockResolvedValueOnce([mockFullSale]);
+        .mockResolvedValueOnce([mockSaleRow]) // allSales
+        .mockResolvedValueOnce([mockSaleRow]) // summaryRawStatuses
+        .mockResolvedValueOnce([mockFullSale]); // representativeRows
       mockPrismaService.sale.count.mockResolvedValue(1);
 
-      const result = await service.findAll({ page: 1, limit: 10 });
+      const result = await service.findAll({
+        page: 1,
+        limit: 10,
+        userId: 'user-1',
+      });
 
       expect(result.data).toHaveLength(1);
       expect(result.meta.total).toBe(1);
@@ -279,13 +305,16 @@ describe('SalesService', () => {
       };
 
       mockPrismaService.sale.findMany
-        .mockResolvedValueOnce(allSalesRows)
-        .mockResolvedValueOnce([representativeSaleB]);
+        .mockResolvedValueOnce(allSalesRows) // allSales
+        .mockResolvedValueOnce(allSalesRows) // summaryRawStatuses
+        .mockResolvedValueOnce([representativeSaleB]); // representativeRows
+      mockPrismaService.sale.count.mockResolvedValue(3);
 
       const result = await service.findAll({
         page: 2,
         limit: 1,
         sortBy: 'az',
+        userId: 'user-1',
       });
 
       expect(result.meta.total).toBe(3);
@@ -713,6 +742,638 @@ describe('SalesService', () => {
 
       expect(mockPrismaService.wintourHeader.create).not.toHaveBeenCalled();
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateSaleStatusFromWintour', () => {
+    it('should mark a sale as success and reset retry data', async () => {
+      mockPrismaService.sale.findUnique.mockResolvedValue({
+        id: 'sale-1',
+        retryCount: 3,
+        lastErrorMessage: 'old error',
+      });
+      mockPrismaService.sale.update.mockResolvedValue({
+        id: 'sale-1',
+        integrationStatus: 'success',
+        retryCount: 0,
+        lastErrorMessage: null,
+      });
+
+      const result = await service.updateSaleStatusFromWintour(
+        'sale-1',
+        'success',
+      );
+
+      expect(mockPrismaService.sale.update).toHaveBeenCalledWith({
+        where: { id: 'sale-1' },
+        data: expect.objectContaining({
+          integrationStatus: 'success',
+          retryCount: 0,
+          lastErrorMessage: null,
+        }),
+      });
+      expect(result.integrationStatus).toBe('success');
+    });
+
+    it('should increment retries and move to manual_pending after five attempts', async () => {
+      mockPrismaService.sale.findUnique.mockResolvedValue({
+        id: 'sale-2',
+        retryCount: 4,
+        lastErrorMessage: null,
+      });
+      mockPrismaService.sale.update.mockResolvedValue({
+        id: 'sale-2',
+        integrationStatus: 'manual_pending',
+        retryCount: 5,
+        lastErrorMessage: 'SOAP timeout',
+      });
+
+      const result = await service.updateSaleStatusFromWintour(
+        'sale-2',
+        'error',
+        'SOAP timeout',
+      );
+
+      expect(mockPrismaService.sale.update).toHaveBeenCalledWith({
+        where: { id: 'sale-2' },
+        data: expect.objectContaining({
+          integrationStatus: 'manual_pending',
+          retryCount: 5,
+          lastErrorMessage: 'SOAP timeout',
+        }),
+      });
+      expect(result.integrationStatus).toBe('manual_pending');
+    });
+  });
+
+  describe('findIntegrationIssues', () => {
+    it('should return sales with error or manual_pending status', async () => {
+      const mockSales = [
+        {
+          id: 'sale-1',
+          integrationStatus: 'error',
+          retryCount: 2,
+          lastErrorMessage: 'Connection timeout',
+          lastIntegrationAt: new Date('2026-05-18T10:00:00.000Z'),
+          customer: {
+            id: 'customer-1',
+            nome_completo: 'John Doe',
+            cpf: '12345678901',
+            email: 'john@example.com',
+          },
+        },
+        {
+          id: 'sale-2',
+          integrationStatus: 'manual_pending',
+          retryCount: 5,
+          lastErrorMessage: 'Max retries reached',
+          lastIntegrationAt: new Date('2026-05-18T09:00:00.000Z'),
+          customer: {
+            id: 'customer-2',
+            nome_completo: 'Jane Smith',
+            cpf: '98765432100',
+            email: 'jane@example.com',
+          },
+        },
+      ];
+
+      mockPrismaService.sale.findMany.mockResolvedValue(mockSales);
+      mockPrismaService.sale.count.mockResolvedValueOnce(2); // total
+      mockPrismaService.sale.groupBy.mockResolvedValue([]); // metrics
+      mockPrismaService.sale.aggregate.mockResolvedValue({
+        _avg: { retryCount: 0 },
+      });
+      mockPrismaService.sale.findFirst.mockResolvedValue(null);
+      mockPrismaService.sale.count.mockResolvedValueOnce(0); // retryableCount
+
+      const result = await service.findIntegrationIssues(1, 10);
+
+      expect(result.data).toHaveLength(2);
+      expect(result.meta.total).toBe(2);
+      expect(result.meta.page).toBe(1);
+      expect(result.meta.lastPage).toBe(1);
+      expect(result.data[0].id).toBe('sale-1');
+      expect(result.data[0].customer.nome_completo).toBe('John Doe');
+      expect(result.metrics).toBeDefined();
+      expect(mockPrismaService.sale.findMany).toHaveBeenCalledWith({
+        where: {
+          integrationStatus: {
+            in: ['error', 'manual_pending'],
+          },
+        },
+        include: {
+          customer: {
+            select: {
+              id: true,
+              nome_completo: true,
+              cpf: true,
+              email: true,
+            },
+          },
+        },
+        skip: 0,
+        take: 10,
+        orderBy: {
+          lastIntegrationAt: 'desc',
+        },
+      });
+    });
+
+    it('should return empty list when no issues found', async () => {
+      mockPrismaService.sale.findMany.mockResolvedValue([]);
+      mockPrismaService.sale.count.mockResolvedValueOnce(0);
+      mockPrismaService.sale.groupBy.mockResolvedValue([]);
+      mockPrismaService.sale.aggregate.mockResolvedValue({
+        _avg: { retryCount: null },
+      });
+      mockPrismaService.sale.findFirst.mockResolvedValue(null);
+      mockPrismaService.sale.count.mockResolvedValueOnce(0);
+
+      const result = await service.findIntegrationIssues(1, 10);
+
+      expect(result.data).toHaveLength(0);
+      expect(result.meta.total).toBe(0);
+      expect(result.meta.lastPage).toBe(0);
+    });
+
+    it('should respect pagination parameters', async () => {
+      mockPrismaService.sale.findMany.mockResolvedValue([]);
+      mockPrismaService.sale.count.mockResolvedValueOnce(50);
+      mockPrismaService.sale.groupBy.mockResolvedValue([]);
+      mockPrismaService.sale.aggregate.mockResolvedValue({
+        _avg: { retryCount: null },
+      });
+      mockPrismaService.sale.findFirst.mockResolvedValue(null);
+      mockPrismaService.sale.count.mockResolvedValueOnce(0);
+
+      await service.findIntegrationIssues(3, 20);
+
+      expect(mockPrismaService.sale.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 40,
+          take: 20,
+        }),
+      );
+    });
+  });
+
+  describe('getIntegrationMetrics', () => {
+    it('should return counts per status', async () => {
+      mockPrismaService.sale.groupBy.mockResolvedValue([
+        { integrationStatus: 'error', _count: { id: 7 } },
+        { integrationStatus: 'manual_pending', _count: { id: 3 } },
+      ]);
+      mockPrismaService.sale.aggregate.mockResolvedValue({
+        _avg: { retryCount: 2.4 },
+      });
+      mockPrismaService.sale.findFirst.mockResolvedValue({
+        lastIntegrationAt: new Date('2026-05-10T08:00:00.000Z'),
+      });
+      mockPrismaService.sale.count.mockResolvedValue(5);
+
+      const result = await service.getIntegrationMetrics();
+
+      expect(result.errorCount).toBe(7);
+      expect(result.manualPendingCount).toBe(3);
+      expect(result.totalIssues).toBe(10);
+      expect(result.retryableCount).toBe(5);
+      expect(result.avgRetryCount).toBe(2.4);
+      expect(result.oldestIssueAt).toEqual(
+        new Date('2026-05-10T08:00:00.000Z'),
+      );
+    });
+
+    it('should return zeros when no issues exist', async () => {
+      mockPrismaService.sale.groupBy.mockResolvedValue([]);
+      mockPrismaService.sale.aggregate.mockResolvedValue({
+        _avg: { retryCount: null },
+      });
+      mockPrismaService.sale.findFirst.mockResolvedValue(null);
+      mockPrismaService.sale.count.mockResolvedValue(0);
+
+      const result = await service.getIntegrationMetrics();
+
+      expect(result.errorCount).toBe(0);
+      expect(result.manualPendingCount).toBe(0);
+      expect(result.totalIssues).toBe(0);
+      expect(result.retryableCount).toBe(0);
+      expect(result.avgRetryCount).toBe(0);
+      expect(result.oldestIssueAt).toBeNull();
+    });
+
+    it('should round avgRetryCount to one decimal place', async () => {
+      mockPrismaService.sale.groupBy.mockResolvedValue([]);
+      mockPrismaService.sale.aggregate.mockResolvedValue({
+        _avg: { retryCount: 2.666666 },
+      });
+      mockPrismaService.sale.findFirst.mockResolvedValue(null);
+      mockPrismaService.sale.count.mockResolvedValue(0);
+
+      const result = await service.getIntegrationMetrics();
+
+      expect(result.avgRetryCount).toBe(2.7);
+    });
+  });
+
+  describe('retryWintourIntegration', () => {
+    it('should retry a sale with error status', async () => {
+      const mockSale = {
+        id: 'sale-1',
+        customerId: 'customer-1',
+        integrationStatus: 'error',
+        retryCount: 2,
+        lastErrorMessage: 'SOAP timeout',
+        lastIntegrationAt: null,
+        nextRetryAt: null,
+        destination: 'Rio de Janeiro',
+        departureDate: new Date('2026-06-01T10:00:00.000Z'),
+        servicesData: {
+          details: {
+            totalValue: 5000,
+            codigo_produto: 'PACK001',
+            forma_de_pagamento: 'CREDIT',
+          },
+        },
+        customer: {
+          id: 'customer-1',
+          nome_completo: 'John Doe',
+          cpf: '12345678901',
+          email: 'john@example.com',
+          endereco: 'Rua A, 123',
+          bairro: 'Centro',
+          cep: '20000-000',
+          cidade: 'Rio de Janeiro',
+          estado: 'RJ',
+          telefone_celular: '21999999999',
+          data_criacao_usuario: new Date('2026-05-01T10:00:00.000Z'),
+        },
+      };
+
+      // findUnique: leitura inicial
+      mockPrismaService.sale.findUnique.mockResolvedValueOnce(mockSale);
+      // updateMany: claim atômico (retorna count=1 = sucesso no claim)
+      mockPrismaService.sale.updateMany.mockResolvedValueOnce({ count: 1 });
+      // update: marca como success
+      mockPrismaService.sale.update.mockResolvedValueOnce({
+        id: 'sale-1',
+        integrationStatus: 'success',
+        retryCount: 0,
+      });
+      // findUnique: findOne ao final
+      mockPrismaService.sale.findUnique.mockResolvedValueOnce({
+        id: 'sale-1',
+        integrationStatus: 'success',
+        retryCount: 0,
+        customerId: 'customer-1',
+        customer: mockSale.customer,
+        passengers: [
+          {
+            id: 'passenger-1',
+            created_at: new Date(),
+            updated_at: new Date(),
+            saleId: 'sale-1',
+            fullName: 'John Doe',
+          },
+        ],
+      });
+
+      jest.spyOn(service as any, 'sendToWintour').mockResolvedValue({
+        protocolo: 'PROTOCOLO-123',
+        raw_response: '<soap:Envelope />',
+        xml_enviado: '<xml />',
+      });
+
+      await service.retryWintourIntegration('sale-1');
+
+      // Verifica claim atômico via updateMany
+      expect(mockPrismaService.sale.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'sale-1',
+            integrationStatus: expect.objectContaining({
+              in: expect.any(Array),
+            }),
+          }),
+          data: expect.objectContaining({
+            integrationStatus: 'processing',
+          }),
+        }),
+      );
+      // Verifica mark-as-success
+      expect(mockPrismaService.sale.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'sale-1' },
+          data: expect.objectContaining({
+            integrationStatus: 'success',
+            retryCount: 0,
+          }),
+        }),
+      );
+    });
+
+    it('should reject retry for sale not in error or manual_pending status', async () => {
+      const mockSale = {
+        id: 'sale-1',
+        integrationStatus: 'success',
+        lastIntegrationAt: null,
+        nextRetryAt: null,
+        customer: {},
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValue(mockSale);
+
+      await expect(service.retryWintourIntegration('sale-1')).rejects.toThrow(
+        "Venda com status 'success' não pode ser reprocessada",
+      );
+    });
+
+    it('should throw ConflictException when sale is already processing', async () => {
+      const mockSale = {
+        id: 'sale-1',
+        integrationStatus: 'processing',
+        lastIntegrationAt: null,
+        nextRetryAt: null,
+        customer: {},
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValue(mockSale);
+
+      await expect(service.retryWintourIntegration('sale-1')).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('should throw ConflictException when atomic claim returns count=0 (concurrent request)', async () => {
+      const mockSale = {
+        id: 'sale-1',
+        integrationStatus: 'error',
+        retryCount: 1,
+        lastIntegrationAt: null,
+        nextRetryAt: null,
+        customer: { id: 'customer-1' },
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValue(mockSale);
+      // Simula outra requisição concorrente que já fez o claim (count=0)
+      mockPrismaService.sale.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.retryWintourIntegration('sale-1')).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('should throw when sale does not exist', async () => {
+      mockPrismaService.sale.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.retryWintourIntegration('nonexistent-id'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('should reject retry if lastIntegrationAt was less than 2 minutes ago (cooldown)', async () => {
+      const recentTime = new Date(Date.now() - 30 * 1000); // 30 seconds ago
+      const mockSaleWithRecentRetry = {
+        id: 'sale-1',
+        integrationStatus: 'error',
+        retryCount: 1,
+        lastIntegrationAt: recentTime,
+        nextRetryAt: null,
+        customer: { id: 'customer-1' },
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValue(
+        mockSaleWithRecentRetry,
+      );
+
+      await expect(service.retryWintourIntegration('sale-1')).rejects.toThrow(
+        /Aguarde.*s antes de reprocessar novamente/,
+      );
+    });
+
+    it('should reject retry if nextRetryAt is in the future', async () => {
+      const futureTime = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes from now
+      const mockSaleWithFutureRetry = {
+        id: 'sale-1',
+        integrationStatus: 'error',
+        retryCount: 1,
+        lastIntegrationAt: new Date(Date.now() - 10 * 60 * 1000), // 10 min ago (passes cooldown)
+        nextRetryAt: futureTime,
+        customer: { id: 'customer-1' },
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValue(
+        mockSaleWithFutureRetry,
+      );
+
+      await expect(service.retryWintourIntegration('sale-1')).rejects.toThrow(
+        /Venda agendada para retry em/,
+      );
+    });
+
+    it('should skip Wintour call and mark as success when same idv_externo was already integrated (idempotency)', async () => {
+      const mockSale = {
+        id: 'sale-1',
+        integrationStatus: 'error',
+        retryCount: 1,
+        lastIntegrationAt: null,
+        nextRetryAt: null,
+        integrationPayload: {
+          nr_arquivo: 'FILE-001',
+          tickets: [{ idv_externo: 'EXT-42', num_bilhete: 'B001' }],
+        },
+        customer: { id: 'customer-1', nome_completo: 'Test User' },
+      };
+
+      mockPrismaService.sale.findUnique.mockResolvedValueOnce(mockSale);
+      // findFirst: returns a duplicate successful sale with same integrationKey
+      mockPrismaService.sale.findFirst.mockResolvedValueOnce({
+        id: 'sale-already-done',
+        integrationStatus: 'success',
+      });
+      // update: marks this sale as success
+      mockPrismaService.sale.update.mockResolvedValueOnce({
+        id: 'sale-1',
+        integrationStatus: 'success',
+      });
+      // findUnique: for findOne at the end
+      mockPrismaService.sale.findUnique.mockResolvedValueOnce({
+        id: 'sale-1',
+        integrationStatus: 'success',
+        retryCount: 0,
+        customerId: 'customer-1',
+        customer: mockSale.customer,
+        passengers: [],
+      });
+
+      const sendToWintourSpy = jest
+        .spyOn(service as any, 'sendToWintour')
+        .mockResolvedValue({
+          protocolo: 'X',
+          raw_response: '',
+          xml_enviado: '',
+        });
+
+      await service.retryWintourIntegration('sale-1');
+
+      // Must NOT call Wintour
+      expect(sendToWintourSpy).not.toHaveBeenCalled();
+      // Must mark as success with integrationKey
+      expect(mockPrismaService.sale.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'sale-1' },
+          data: expect.objectContaining({
+            integrationStatus: 'success',
+            integrationKey: 'EXT-42',
+          }),
+        }),
+      );
+    });
+  });
+
+  describe('scheduleIntegrationRetry', () => {
+    let savedNodeEnv: string | undefined;
+
+    beforeEach(() => {
+      // Restaura NODE_ENV para que o método possa ser exercitado diretamente
+      savedNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+    });
+
+    afterEach(() => {
+      // Reseta o guard de re-entrância após cada teste
+      (service as any).isCronRunning = false;
+      process.env.NODE_ENV = savedNodeEnv;
+    });
+
+    it('should return early when retry is disabled', async () => {
+      mockConfigService.get.mockReturnValue({
+        enabled: false,
+        maxRetries: 5,
+        maxSalesPerCycle: 10,
+      });
+
+      await service.scheduleIntegrationRetry();
+
+      expect(mockPrismaService.sale.findMany).not.toHaveBeenCalled();
+    });
+
+    it('should skip execution when a previous cron cycle is still running', async () => {
+      (service as any).isCronRunning = true;
+      mockConfigService.get.mockReturnValue({
+        enabled: true,
+        maxRetries: 5,
+        maxSalesPerCycle: 10,
+      });
+
+      await service.scheduleIntegrationRetry();
+
+      expect(mockPrismaService.sale.findMany).not.toHaveBeenCalled();
+    });
+
+    it('should query sales with error status and retry count < maxRetries', async () => {
+      mockConfigService.get.mockReturnValue({
+        enabled: true,
+        maxRetries: 5,
+        maxSalesPerCycle: 10,
+      });
+
+      mockPrismaService.sale.findMany.mockResolvedValue([]);
+
+      await service.scheduleIntegrationRetry();
+
+      expect(mockPrismaService.sale.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            integrationStatus: 'error',
+            retryCount: { lt: 5 },
+            OR: expect.arrayContaining([
+              { nextRetryAt: null },
+              {
+                nextRetryAt: expect.objectContaining({ lte: expect.any(Date) }),
+              },
+            ]),
+          }),
+          select: expect.objectContaining({
+            id: true,
+            retryCount: true,
+            lastIntegrationAt: true,
+            nextRetryAt: true,
+          }),
+          take: 10,
+        }),
+      );
+    });
+
+    it('should respect maxSalesPerCycle from config', async () => {
+      mockConfigService.get.mockReturnValue({
+        enabled: true,
+        maxRetries: 5,
+        maxSalesPerCycle: 7,
+      });
+
+      mockPrismaService.sale.findMany.mockResolvedValue([]);
+
+      await service.scheduleIntegrationRetry();
+
+      expect(mockPrismaService.sale.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 7,
+        }),
+      );
+    });
+
+    it('should respect maxRetries from config', async () => {
+      mockConfigService.get.mockReturnValue({
+        enabled: true,
+        maxRetries: 3,
+        maxSalesPerCycle: 10,
+      });
+
+      mockPrismaService.sale.findMany.mockResolvedValue([]);
+
+      await service.scheduleIntegrationRetry();
+
+      expect(mockPrismaService.sale.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            retryCount: {
+              lt: 3,
+            },
+          }),
+        }),
+      );
+    });
+
+    it('should handle empty result without errors', async () => {
+      mockConfigService.get.mockReturnValue({
+        enabled: true,
+        maxRetries: 5,
+        maxSalesPerCycle: 10,
+      });
+
+      mockPrismaService.sale.findMany.mockResolvedValue([]);
+
+      // Should not throw
+      await expect(service.scheduleIntegrationRetry()).resolves.toBeUndefined();
+    });
+
+    it('should catch and log errors from database query', async () => {
+      mockConfigService.get.mockReturnValue({
+        enabled: true,
+        maxRetries: 5,
+        maxSalesPerCycle: 10,
+      });
+
+      const dbError = new Error('Database connection failed');
+      mockPrismaService.sale.findMany.mockRejectedValue(dbError);
+
+      const loggerErrorSpy = jest.spyOn(service['logger'], 'error');
+
+      await service.scheduleIntegrationRetry();
+
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Erro crítico no agendador'),
+      );
     });
   });
 });

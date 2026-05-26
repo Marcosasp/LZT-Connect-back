@@ -22,18 +22,23 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { SalesService } from './sales.service';
+import { IntegrationLogService } from './integration-log.service';
 import { WintourImportResponse } from './entities/wintour.entity';
 import { CreateSaleByCpfDto } from './dto/create-sale-by-cpf.dto';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { CreateWintourImportInput } from './dto/create-wintour-import.input';
 import { UpdateSaleDto } from './dto/update-sale.dto';
+import { IntegrationMetricsDto } from './dto/integration-log.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @ApiTags('sales')
 @ApiBearerAuth()
 @Controller('sales')
 export class SalesController {
-  constructor(private readonly salesService: SalesService) {}
+  constructor(
+    private readonly salesService: SalesService,
+    private readonly integrationLogService: IntegrationLogService,
+  ) {}
 
   @Get()
   @UseGuards(JwtAuthGuard)
@@ -91,8 +96,12 @@ export class SalesController {
   async importSales(
     @Body(new ValidationPipe({ transform: true, whitelist: false }))
     data: CreateWintourImportInput,
+    @Req() request?: any,
   ): Promise<WintourImportResponse> {
-    return this.salesService.createWintourImport(data);
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+
+    return this.salesService.createWintourImport(data, userId);
   }
 
   @Post('create-with-triage')
@@ -130,6 +139,7 @@ export class SalesController {
     body: {
       saleId: string;
       newStatus: string;
+      errorMessage?: string;
     },
     @Headers('x-wintour-secret') wintourSecret?: string,
   ) {
@@ -145,6 +155,7 @@ export class SalesController {
     const updatedSale = await this.salesService.updateSaleStatusFromWintour(
       saleId,
       newStatus,
+      body.errorMessage,
     );
 
     console.log(
@@ -157,6 +168,115 @@ export class SalesController {
       status: newStatus,
       sale: updatedSale,
     };
+  }
+
+  @Get('integration-issues')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Listar vendas com problemas de integração',
+    description:
+      'Retorna lista paginada de vendas com status error ou manual_pending, ' +
+      'acompanhada de métricas de dashboard (contagens, média de tentativas, etc).',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Lista paginada de vendas com problema + métricas de integração.',
+    schema: {
+      properties: {
+        data: { type: 'array', items: { type: 'object' } },
+        meta: {
+          type: 'object',
+          properties: {
+            total: { type: 'number' },
+            page: { type: 'number' },
+            limit: { type: 'number' },
+            lastPage: { type: 'number' },
+          },
+        },
+        metrics: { $ref: '#/components/schemas/IntegrationMetricsDto' },
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Não autorizado.' })
+  async findIntegrationIssues(
+    @Query('page') page = '1',
+    @Query('limit') limit = '10',
+    @Query('days') days = '',
+  ) {
+    const daysNum = parseInt(days, 10);
+    const sinceDate =
+      daysNum === 7 || daysNum === 30
+        ? new Date(Date.now() - daysNum * 24 * 60 * 60 * 1000)
+        : undefined;
+
+    return this.salesService.findIntegrationIssues(
+      Math.max(1, parseInt(page, 10) || 1),
+      Math.min(100, Math.max(1, parseInt(limit, 10) || 10)),
+      sinceDate,
+    );
+  }
+
+  @Get('integration-metrics')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Métricas de integração para dashboard',
+    description:
+      'Retorna contagens e estatísticas de integração em tempo real: ' +
+      'vendas com erro, aguardando intervenção manual, reprocessáveis e média de tentativas.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Métricas de integração.',
+    type: IntegrationMetricsDto,
+  })
+  @ApiResponse({ status: 401, description: 'Não autorizado.' })
+  async getIntegrationMetrics(): Promise<IntegrationMetricsDto> {
+    return this.salesService.getIntegrationMetrics();
+  }
+
+  @Post(':id/retry-integration')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Reprocessar integração Wintour para uma venda com erro',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Venda reprocessada com sucesso. Retorna status atualizado da venda.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Venda não pode ser reprocessada neste status.',
+  })
+  @ApiResponse({ status: 404, description: 'Venda não encontrada.' })
+  @ApiResponse({ status: 401, description: 'Não autorizado.' })
+  async retryIntegration(@Param('id') id: string) {
+    return this.salesService.retryWintourIntegration(id);
+  }
+
+  @Get(':id/integration-logs')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Listar logs de integração de uma venda (paginado)',
+    description:
+      'Retorna histórico completo de tentativas de integração Wintour para a venda, ordenado do mais recente para o mais antigo.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Lista paginada de logs de integração.',
+  })
+  @ApiResponse({ status: 401, description: 'Não autorizado.' })
+  async getIntegrationLogs(
+    @Param('id') id: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '10',
+  ) {
+    return this.integrationLogService.findBySaleIdPaginated(
+      id,
+      Math.max(1, parseInt(page, 10) || 1),
+      Math.min(100, Math.max(1, parseInt(limit, 10) || 10)),
+    );
   }
 
   @Delete(':id')

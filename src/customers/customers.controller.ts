@@ -3,7 +3,10 @@ import {
   ClassSerializerInterceptor,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
+  Headers,
+  UnauthorizedException,
   Param,
   Patch,
   Post,
@@ -15,6 +18,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiHeader,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -36,11 +40,44 @@ import { CustomersService } from './customers.service';
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
+  private static readonly CREATE_CUSTOMER_TRIAGE_ORIGIN = 'sales-triage';
+
   @Post()
+  @ApiHeader({
+    name: 'x-customer-origin',
+    required: false,
+    description:
+      'Origem da criação. Obrigatório para criação via triagem de venda: sales-triage.',
+  })
   @ApiOperation({ summary: 'Cadastrar cliente' })
   @ApiResponse({ status: 201, type: Customer })
-  create(@Body() data: CreateCustomerInput) {
-    return this.customersService.create(data);
+  @ApiResponse({
+    status: 403,
+    description:
+      'Criação direta bloqueada. Utilize o fluxo de triagem de venda.',
+  })
+  create(
+    @Body() data: CreateCustomerInput,
+    @Req() request?: any,
+    @Headers('x-customer-origin') customerOrigin?: string,
+  ) {
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+
+    if (!userId) {
+      throw new UnauthorizedException('Usuário não autenticado.');
+    }
+
+    if (
+      customerOrigin?.toLowerCase() !==
+      CustomersController.CREATE_CUSTOMER_TRIAGE_ORIGIN
+    ) {
+      throw new ForbiddenException(
+        'Criação direta de cliente não permitida. Utilize o fluxo de venda com triagem.',
+      );
+    }
+
+    return this.customersService.create(data, userId);
   }
 
   @Patch(':id')
@@ -51,17 +88,26 @@ export class CustomersController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Excluir cliente' })
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Remover cliente da lista do usuário' })
   @ApiResponse({ status: 200, schema: { example: { success: true } } })
-  async remove(@Param('id') id: string) {
-    await this.customersService.remove(id);
+  async unlinkFromUser(@Param('id') id: string, @Req() request: any) {
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+
+    if (!userId) {
+      throw new UnauthorizedException('Usuário não autenticado.');
+    }
+
+    await this.customersService.unlinkFromUser(id, userId);
     return { success: true };
   }
 
   @Get()
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Listar clientes' })
   @ApiResponse({ status: 200, type: [Customer] })
-  findAll(@Query() pagination: PaginationDto) {
+  findAll(@Query() pagination: PaginationDto, @Req() request: any) {
     const {
       page,
       limit,
@@ -75,13 +121,24 @@ export class CustomersController {
     } = pagination;
     const rawOrder = order ?? sort ?? direction ?? sorting ?? dir ?? orderBy;
 
-    return this.customersService.findAll(page, per_page ?? limit, rawOrder);
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+
+    return this.customersService.findAll(
+      page,
+      per_page ?? limit,
+      rawOrder,
+      userId,
+    );
   }
 
   @Get('search')
   @ApiOperation({ summary: 'Buscar clientes com filtros' })
   @ApiResponse({ status: 200, type: [Customer] })
-  search(@Query() filters: FilterCustomerDto) {
+  search(@Query() filters: FilterCustomerDto, @Req() request: any) {
+    const user = request?.user as { id?: string; user_id?: string } | undefined;
+    const userId = user?.id ?? user?.user_id;
+
     return this.customersService.search(
       filters,
       filters.order ??
@@ -89,6 +146,7 @@ export class CustomersController {
         filters.direction ??
         filters.sorting ??
         filters.orderBy,
+      userId,
     );
   }
 

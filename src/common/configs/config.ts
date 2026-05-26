@@ -19,6 +19,14 @@ const config: Config = {
     refreshIn: '7d',
     bcryptSaltOrRound: 10,
   },
+  wintourRetry: {
+    enabled: process.env.WINTOUR_RETRY_ENABLED === 'true',
+    maxRetries: parseInt(process.env.WINTOUR_RETRY_MAX_RETRIES ?? '5', 10),
+    maxSalesPerCycle: parseInt(
+      process.env.WINTOUR_RETRY_MAX_SALES_PER_CYCLE ?? '10',
+      10,
+    ),
+  },
 };
 
 export default (): Config => config;

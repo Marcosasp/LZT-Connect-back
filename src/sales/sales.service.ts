@@ -1,12 +1,17 @@
 import {
+  BadRequestException,
   BadGatewayException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from 'nestjs-prisma';
-import { Prisma, TravelType } from '@prisma/client';
+import { IntegrationStatus, Prisma, TravelType } from '@prisma/client';
 import {
   CreateWintourImportInput,
   WintourCustomerInput,
@@ -14,14 +19,30 @@ import {
 import { UpdateSaleDto } from './dto/update-sale.dto';
 import { Customer } from '../customers/entities/customer.entity';
 import { WintourSoapService } from './wintour-soap.service';
+import { IntegrationLogService } from './integration-log.service';
+import { IntegrationMetricsDto } from './dto/integration-log.dto';
+
+/** Cooldown mínimo entre tentativas de retry (2 minutos em ms). */
+const RETRY_COOLDOWN_MS = 2 * 60 * 1000;
+
+/** Backoff exponencial base em ms (base: 5 minutos × 2^attempt). */
+const RETRY_BACKOFF_BASE_MS = 5 * 60 * 1000;
+
+/** Limite máximo do backoff para evitar janelas muito longas (4 horas). */
+const RETRY_BACKOFF_MAX_MS = 4 * 60 * 60 * 1000;
 
 @Injectable()
 export class SalesService {
   private readonly logger = new Logger(SalesService.name);
 
+  /** Impede execuções sobrepostas do cron de retry (re-entrancy guard). */
+  private isCronRunning = false;
+
   constructor(
     private prisma: PrismaService,
     private readonly wintourSoapService: WintourSoapService,
+    private readonly configService: ConfigService,
+    private readonly integrationLogService: IntegrationLogService,
   ) {}
 
   private getIntegrationConfig() {
@@ -216,14 +237,10 @@ export class SalesService {
       .trim()
       .toLowerCase();
 
-    if (
-      normalized === 'recentes' ||
-      normalized === 'antigos' ||
-      normalized === 'az' ||
-      normalized === 'za'
-    ) {
-      return normalized;
-    }
+    if (normalized.includes('recente')) return 'recentes';
+    if (normalized.includes('antigo')) return 'antigos';
+    if (normalized.includes('a-z') || normalized === 'az') return 'az';
+    if (normalized.includes('z-a') || normalized === 'za') return 'za';
 
     return 'recentes';
   }
@@ -274,6 +291,163 @@ export class SalesService {
         return details.wintourHeaderId === headerId;
       })
       .map((sale) => sale.id);
+  }
+
+  private async getSalesByHeaderId(
+    headerId: string,
+    tx: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<Array<{ id: string; retryCount: number }>> {
+    const sales = await tx.sale.findMany({
+      select: {
+        id: true,
+        retryCount: true,
+        servicesData: true,
+      },
+    });
+
+    return sales
+      .filter((sale) => {
+        const saleData =
+          (sale.servicesData as Record<string, any> | null) ?? {};
+        const details =
+          (saleData.details as Record<string, any> | undefined) ?? {};
+        return details.wintourHeaderId === headerId;
+      })
+      .map((sale) => ({
+        id: sale.id,
+        retryCount: sale.retryCount,
+      }));
+  }
+
+  private resolveIntegrationFailureStatus(
+    retryCount: number,
+  ): IntegrationStatus {
+    return retryCount >= 5
+      ? IntegrationStatus.manual_pending
+      : IntegrationStatus.error;
+  }
+
+  /**
+   * Calcula o próximo instante permitido para retry com backoff exponencial.
+   * attempt=1 → +5min, attempt=2 → +10min, attempt=3 → +20min … cap 4h.
+   */
+  private calcNextRetryAt(attemptNumber: number): Date {
+    const backoffMs = Math.min(
+      RETRY_BACKOFF_BASE_MS * Math.pow(2, attemptNumber - 1),
+      RETRY_BACKOFF_MAX_MS,
+    );
+    return new Date(Date.now() + backoffMs);
+  }
+
+  private normalizeIntegrationStatus(
+    value?: string | null,
+  ): IntegrationStatus | null {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase();
+
+    if (normalized === IntegrationStatus.pending) {
+      return IntegrationStatus.pending;
+    }
+
+    if (normalized === IntegrationStatus.processing) {
+      return IntegrationStatus.processing;
+    }
+
+    if (normalized === IntegrationStatus.success) {
+      return IntegrationStatus.success;
+    }
+
+    if (normalized === IntegrationStatus.error) {
+      return IntegrationStatus.error;
+    }
+
+    if (normalized === IntegrationStatus.manual_pending) {
+      return IntegrationStatus.manual_pending;
+    }
+
+    return null;
+  }
+
+  private async markSalesAsProcessing(
+    headerId: string,
+    tx: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const sales = await this.getSalesByHeaderId(headerId, tx);
+
+    if (!sales.length) {
+      return;
+    }
+
+    await tx.sale.updateMany({
+      where: {
+        id: {
+          in: sales.map((sale) => sale.id),
+        },
+      },
+      data: {
+        integrationStatus: IntegrationStatus.processing,
+        lastIntegrationAt: new Date(),
+      },
+    });
+  }
+
+  private async markSalesAsSuccess(
+    headerId: string,
+    tx: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const sales = await this.getSalesByHeaderId(headerId, tx);
+
+    if (!sales.length) {
+      return;
+    }
+
+    await tx.sale.updateMany({
+      where: {
+        id: {
+          in: sales.map((sale) => sale.id),
+        },
+      },
+      data: {
+        integrationStatus: IntegrationStatus.success,
+        retryCount: 0,
+        lastErrorMessage: null,
+        lastIntegrationAt: new Date(),
+        nextRetryAt: null,
+      },
+    });
+  }
+
+  private async markSalesAsFailure(
+    headerId: string,
+    errorMessage: string,
+    tx: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const sales = await this.getSalesByHeaderId(headerId, tx);
+
+    if (!sales.length) {
+      return;
+    }
+
+    await Promise.all(
+      sales.map(async (sale) => {
+        const retryCount = sale.retryCount + 1;
+        const nextRetryAt = this.calcNextRetryAt(retryCount);
+
+        await tx.sale.update({
+          where: {
+            id: sale.id,
+          },
+          data: {
+            integrationStatus: this.resolveIntegrationFailureStatus(retryCount),
+            retryCount,
+            lastErrorMessage: errorMessage,
+            lastIntegrationAt: new Date(),
+            nextRetryAt,
+          },
+        });
+      }),
+    );
   }
 
   private async getSaleIdsByFileNumber(
@@ -704,34 +878,69 @@ export class SalesService {
     );
   }
 
-  private async sendToWintour(data: CreateWintourImportInput) {
+  private async sendToWintour(
+    data: CreateWintourImportInput,
+    context?: { headerId?: string },
+  ) {
     const config = this.getIntegrationConfig();
     const xml = this.buildWintourXml(data);
 
     const arquivoBase64 = Buffer.from(xml, 'latin1').toString('base64');
 
-    const { rawResponse, resultValue } =
-      await this.wintourSoapService.importarArquivo2({
-        aPin: config.pin,
-        aArquivo: arquivoBase64,
-        aLivre: config.livre,
-      });
-
-    if (this.isIntegrationErrorMessage(resultValue)) {
-      throw new BadGatewayException({
-        message: `Falha na integracao Wintour: ${
-          resultValue || 'retorno invalido do servico SOAP'
-        }`,
-        raw_response: rawResponse,
-        status_code: 502,
-      });
+    if (context?.headerId) {
+      await this.markSalesAsProcessing(context.headerId);
     }
 
-    return {
-      protocolo: resultValue,
-      raw_response: rawResponse,
-      xml_enviado: xml,
-    };
+    try {
+      const { rawResponse, resultValue } =
+        await this.wintourSoapService.importarArquivo2({
+          aPin: config.pin,
+          aArquivo: arquivoBase64,
+          aLivre: config.livre,
+        });
+
+      if (this.isIntegrationErrorMessage(resultValue)) {
+        const error = new BadGatewayException({
+          message: `Falha na integracao Wintour: ${
+            resultValue || 'retorno invalido do servico SOAP'
+          }`,
+          raw_response: rawResponse,
+          status_code: 502,
+        });
+
+        throw error;
+      }
+
+      if (context?.headerId) {
+        await this.markSalesAsSuccess(context.headerId);
+      }
+
+      return {
+        protocolo: resultValue,
+        raw_response: rawResponse,
+        xml_enviado: xml,
+      };
+    } catch (error) {
+      if (context?.headerId) {
+        const errorMessage =
+          error instanceof BadGatewayException
+            ? (() => {
+                const response = error.getResponse();
+                return typeof response === 'string'
+                  ? response
+                  : response
+                  ? JSON.stringify(response)
+                  : error.message;
+              })()
+            : error instanceof Error
+            ? error.message
+            : String(error);
+
+        await this.markSalesAsFailure(context.headerId, errorMessage);
+      }
+
+      throw error;
+    }
   }
 
   private async getLinkedCustomers(
@@ -899,7 +1108,23 @@ export class SalesService {
     };
   }
 
-  async createWintourImport(data: CreateWintourImportInput) {
+  /**
+   * Deriva a chave de idempotência do payload.
+   * Usa os valores de `idv_externo` de todos os tickets (ordenados), ou
+   * cai back para `nr_arquivo` quando nenhum ticket possui esse campo.
+   * Garante que o mesmo conjunto de bilhetes não seja reenviado ao Wintour.
+   */
+  private buildIntegrationKey(payload: CreateWintourImportInput): string {
+    const keys = payload.tickets
+      .map((t) => t.idv_externo?.trim())
+      .filter((k): k is string => Boolean(k))
+      .sort();
+    return keys.length > 0
+      ? keys.join('|')
+      : `nr_arquivo:${payload.nr_arquivo}`;
+  }
+
+  async createWintourImport(data: CreateWintourImportInput, userId?: string) {
     const {
       nr_arquivo,
       data_geracao,
@@ -923,7 +1148,7 @@ export class SalesService {
       resolvedTickets,
     );
 
-    const localImport = await this.prisma.$transaction(async (tx) => {
+    const localResult = await this.prisma.$transaction(async (tx) => {
       const headersToDelete = await tx.wintourHeader.findMany({
         where: { nr_arquivo },
         select: { id: true },
@@ -1090,8 +1315,9 @@ export class SalesService {
         },
       });
 
+      let createdSaleId: string | null = null;
       if (createdHeader.tickets?.length) {
-        await this.createSalesFromHeader(
+        const result = await this.createSalesFromHeader(
           {
             id: createdHeader.id,
             tickets: createdHeader.tickets,
@@ -1101,15 +1327,97 @@ export class SalesService {
           paymentDetails,
           selectedServices,
           servicesDetails,
+          userId,
           tx,
+          integrationPayload,
         );
+        createdSaleId = result.saleId;
       }
 
-      return createdHeader;
+      return { header: createdHeader, saleId: createdSaleId };
     });
 
+    const { header: localImport, saleId: createdSaleId } = localResult;
+    const integrationKey = this.buildIntegrationKey(integrationPayload);
+
+    // Idempotência: se outra venda com a mesma chave já foi integrada com
+    // sucesso, marcamos esta como success sem reenviar ao Wintour.
+    if (createdSaleId) {
+      const duplicate = await this.prisma.sale.findFirst({
+        where: {
+          integrationKey,
+          integrationStatus: IntegrationStatus.success,
+          id: { not: createdSaleId },
+        },
+        select: { id: true },
+      });
+
+      if (duplicate) {
+        this.logger.log(
+          `[createWintourImport] Payload já integrado (key=${integrationKey}, ref=${duplicate.id}). Marcando ${createdSaleId} como success sem reenviar.`,
+        );
+        await this.prisma.sale.update({
+          where: { id: createdSaleId },
+          data: {
+            integrationStatus: IntegrationStatus.success,
+            retryCount: 0,
+            lastErrorMessage: null,
+            lastIntegrationAt: new Date(),
+            nextRetryAt: null,
+          },
+        });
+        await this.prisma.wintourHeader.update({
+          where: { id: localImport.id },
+          data: { integration_status: 'success' },
+        });
+        await this.integrationLogService.create({
+          saleId: createdSaleId,
+          attempt: 1,
+          status: 'success',
+          payload: integrationPayload,
+          response: { idempotent: true, ref: duplicate.id },
+        });
+        const importacaoAtualizada =
+          await this.prisma.wintourHeader.findUniqueOrThrow({
+            where: { id: localImport.id },
+            include: {
+              tickets: {
+                include: {
+                  apportionments: true,
+                  values: true,
+                  expiry_dates: true,
+                  air_data: { include: { sections: true } },
+                  hotel_data: true,
+                  customer_data: true,
+                  sales_origins: true,
+                  conjugates: true,
+                  location_data: true,
+                  package_data: true,
+                  other_services: true,
+                  transfer_data: true,
+                  wintour_other: true,
+                  user: true,
+                  customer_record: true,
+                },
+              },
+            },
+          });
+        return {
+          importacao: importacaoAtualizada,
+          integracao: {
+            status: 'success',
+            protocolo: null,
+            raw_response: null,
+            idempotent: true,
+          },
+        };
+      }
+    }
+
     try {
-      const integration = await this.sendToWintour(integrationPayload);
+      const integration = await this.sendToWintour(integrationPayload, {
+        headerId: localImport.id,
+      });
       const importacaoAtualizada = await this.prisma.wintourHeader.update({
         where: {
           id: localImport.id,
@@ -1146,6 +1454,19 @@ export class SalesService {
         },
       });
 
+      if (createdSaleId) {
+        await this.integrationLogService.create({
+          saleId: createdSaleId,
+          attempt: 1,
+          status: 'success',
+          payload: integrationPayload,
+          response: {
+            protocolo: integration.protocolo,
+            raw_response: integration.raw_response,
+          },
+        });
+      }
+
       return {
         importacao: importacaoAtualizada,
         integracao: {
@@ -1175,6 +1496,16 @@ export class SalesService {
             integration_status: 'error',
             integration_raw_response: serializedResponse,
           },
+        });
+      }
+
+      if (createdSaleId) {
+        await this.integrationLogService.create({
+          saleId: createdSaleId,
+          attempt: 1,
+          status: 'error',
+          payload: integrationPayload,
+          error: serializedResponse,
         });
       }
 
@@ -1271,21 +1602,63 @@ export class SalesService {
       saleDateRange.lte = endDateBoundary;
     }
 
+    // Segurança: userId é obrigatório para isolar dados do usuário logado.
+    // Nunca deve retornar vendas de outros usuários.
+    if (!userId) {
+      const emptySummary = {
+        totalCount: 0,
+        pendingCount: 0,
+        approvedCount: 0,
+        cancelledCount: 0,
+      };
+
+      return {
+        data: [],
+        summary: emptySummary,
+        meta: {
+          total: 0,
+          page: normalizedPage,
+          limit: normalizedLimit,
+          lastPage: 1,
+          summary: {
+            total: emptySummary.totalCount,
+            pending: emptySummary.pendingCount,
+            approved: emptySummary.approvedCount,
+            canceled: emptySummary.cancelledCount,
+          },
+        },
+      };
+    }
+
     const where: Prisma.SaleWhereInput = {
+      userId,
       ...(Object.keys(saleDateRange).length > 0
         ? {
-            sale_date: saleDateRange,
+            OR: [
+              // Filtra pelo campo DATA DA VENDA quando disponível.
+              { sale_date: { not: null, ...saleDateRange } },
+              // Fallback para created_at quando sale_date não foi preenchido.
+              { sale_date: null, created_at: saleDateRange },
+            ],
           }
         : {}),
     };
 
+    const prismaOrderBy: Prisma.SaleOrderByWithRelationInput[] =
+      normalizedSortBy === 'antigos'
+        ? [{ created_at: 'asc' }]
+        : normalizedSortBy === 'recentes'
+        ? [{ created_at: 'desc' }]
+        : [{ sale_date: 'desc' }, { updated_at: 'desc' }];
+
     console.log('Filtro Final Prisma:', JSON.stringify(where));
+    console.log('OrderBy Prisma aplicado:', JSON.stringify(prismaOrderBy));
 
     // ─────────────────────────────────────────────────────────────────────────────
     // ESTRATÉGIA DE PAGINAÇÃO: GRUPOS (não vendas individuais)
     // ─────────────────────────────────────────────────────────────────────────────
     // Grupos são virtuais (agrupados por wintourHeaderId ou sale.id).
-    // 
+    //
     // Fluxo:
     // 1. Buscar TODAS as vendas (com select limitado) para criar grupos.
     // 2. Agrupa vendas em memória por wintourHeaderId ?? sale.id.
@@ -1304,24 +1677,64 @@ export class SalesService {
     // - segunda query busca apenas dados dos representantes da página
     // ─────────────────────────────────────────────────────────────────────────────
 
-    const allSales = await this.prisma.sale.findMany({
-      where,
-      orderBy: [{ sale_date: 'desc' }, { updated_at: 'desc' }],
-      select: {
-        id: true,
-        sale_date: true,
-        updated_at: true,
-        servicesData: true,
-        customer: {
-          select: {
-            razao_social: true,
-            nome_completo: true,
-            email: true,
-            cpf: true,
+    const [allSales, summaryRawTotal, summaryRawStatuses] = await Promise.all([
+      this.prisma.sale.findMany({
+        where,
+        orderBy: prismaOrderBy,
+        select: {
+          id: true,
+          created_at: true,
+          sale_date: true,
+          updated_at: true,
+          integrationStatus: true,
+          retryCount: true,
+          lastErrorMessage: true,
+          lastIntegrationAt: true,
+          servicesData: true,
+          customer: {
+            select: {
+              razao_social: true,
+              nome_completo: true,
+              email: true,
+              cpf: true,
+            },
           },
         },
+      }),
+      this.prisma.sale.count({
+        where: { userId },
+      }),
+      this.prisma.sale.findMany({
+        where: { userId },
+        select: {
+          servicesData: true,
+        },
+      }),
+    ]);
+
+    const summary = summaryRawStatuses.reduce(
+      (acc, sale) => {
+        const statusGroup = this.getSaleStatusGroupFromServicesData(
+          sale.servicesData,
+        );
+
+        if (statusGroup === 'approved') {
+          acc.approvedCount += 1;
+        } else if (statusGroup === 'canceled') {
+          acc.cancelledCount += 1;
+        } else {
+          acc.pendingCount += 1;
+        }
+
+        return acc;
       },
-    });
+      {
+        totalCount: summaryRawTotal,
+        pendingCount: 0,
+        approvedCount: 0,
+        cancelledCount: 0,
+      },
+    );
 
     const groups = new Map<
       string,
@@ -1333,14 +1746,28 @@ export class SalesService {
         statusGroup: 'approved' | 'pending' | 'canceled';
         searchText: string;
         customerName: string;
-        referenceDate: Date | null;
+        latestSaleDate: Date | null;
+        createdAt: Date | null;
       }
     >();
+
+    const toSafeTimestamp = (value: Date | string | null | undefined) => {
+      if (!value) return 0;
+      const parsed = new Date(value).getTime();
+      if (Number.isNaN(parsed)) return 0;
+      // Ignore future dates to avoid invalid records pinning the top position.
+      return parsed > Date.now() ? 0 : parsed;
+    };
 
     for (const sale of allSales) {
       const data = (sale.servicesData as Record<string, any> | null) ?? {};
       const details = (data.details as Record<string, any> | undefined) ?? {};
       const groupKey = details.wintourHeaderId ?? sale.id;
+      const saleTimestamp = Math.max(
+        toSafeTimestamp(sale.sale_date),
+        toSafeTimestamp(sale.updated_at),
+        toSafeTimestamp(sale.created_at),
+      );
 
       if (!groups.has(groupKey)) {
         const searchText = [
@@ -1367,7 +1794,7 @@ export class SalesService {
             detailsCustomerName,
         ).trim();
 
-        const referenceDate = sale.sale_date ?? sale.updated_at ?? null;
+        const latestSaleDate = saleTimestamp ? new Date(saleTimestamp) : null;
 
         groups.set(groupKey, {
           representativeId: sale.id,
@@ -1379,11 +1806,25 @@ export class SalesService {
           ),
           searchText,
           customerName,
-          referenceDate,
+          latestSaleDate,
+          createdAt: sale.created_at ?? null,
         });
       }
 
       const group = groups.get(groupKey)!;
+
+      const vendaData = toSafeTimestamp(sale.created_at);
+      const dataAtualGrupo = group.latestSaleDate
+        ? toSafeTimestamp(group.latestSaleDate)
+        : 0;
+
+      if (vendaData > dataAtualGrupo) {
+        group.latestSaleDate = sale.created_at
+          ? new Date(sale.created_at)
+          : null;
+      } else if (saleTimestamp > dataAtualGrupo) {
+        group.latestSaleDate = new Date(saleTimestamp);
+      }
 
       if (!group.customerName) {
         const fallbackCustomerName = String(
@@ -1425,45 +1866,7 @@ export class SalesService {
     // ─────────────────────────────────────────────────────────────────────────────
     const groupEntries = Array.from(groups.entries());
 
-    const sortedGroups = groupEntries.sort((left, right) => {
-      const leftGroup = left[1];
-      const rightGroup = right[1];
-      const leftTimestamp = leftGroup.referenceDate
-        ? new Date(leftGroup.referenceDate).getTime()
-        : 0;
-      const rightTimestamp = rightGroup.referenceDate
-        ? new Date(rightGroup.referenceDate).getTime()
-        : 0;
-
-      if (normalizedSortBy === 'az') {
-        const byName = leftGroup.customerName.localeCompare(
-          rightGroup.customerName,
-          'pt-BR',
-          { sensitivity: 'base' },
-        );
-        return byName || rightTimestamp - leftTimestamp;
-      }
-
-      if (normalizedSortBy === 'za') {
-        const byName = rightGroup.customerName.localeCompare(
-          leftGroup.customerName,
-          'pt-BR',
-          { sensitivity: 'base' },
-        );
-        return byName || rightTimestamp - leftTimestamp;
-      }
-
-      if (normalizedSortBy === 'antigos') {
-        return leftTimestamp - rightTimestamp;
-      }
-
-      return rightTimestamp - leftTimestamp;
-    });
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // FILTRAGEM DE GRUPOS (após ordenação global)
-    // ─────────────────────────────────────────────────────────────────────────────
-    const sortedAndFilteredGroups = sortedGroups.filter(([, group]) => {
+    const sortedAndFilteredGroups = groupEntries.filter(([, group]) => {
       const matchesStatus = normalizedStatus
         ? group.statusGroup === normalizedStatus
         : true;
@@ -1473,6 +1876,49 @@ export class SalesService {
 
       return matchesStatus && matchesSearch;
     });
+
+    sortedAndFilteredGroups.sort(
+      ([leftKey, leftGroup], [rightKey, rightGroup]) => {
+        const parseToTimestamp = (group: any) => {
+          const dateVal = group.latestSaleDate || group.createdAt;
+          if (!dateVal) return 0;
+          const parsed = new Date(dateVal).getTime();
+          return isNaN(parsed) ? 0 : parsed;
+        };
+
+        const leftTimestamp = parseToTimestamp(leftGroup);
+        const rightTimestamp = parseToTimestamp(rightGroup);
+
+        if (normalizedSortBy === 'az') {
+          const byName = leftGroup.customerName.localeCompare(
+            rightGroup.customerName,
+            'pt-BR',
+            { sensitivity: 'base' },
+          );
+          return byName || rightTimestamp - leftTimestamp;
+        }
+
+        if (normalizedSortBy === 'za') {
+          const byName = rightGroup.customerName.localeCompare(
+            leftGroup.customerName,
+            'pt-BR',
+            { sensitivity: 'base' },
+          );
+          return byName || rightTimestamp - leftTimestamp;
+        }
+
+        if (normalizedSortBy === 'antigos') {
+          return leftTimestamp - rightTimestamp; // Mais antigo primeiro (Crescente)
+        }
+
+        if (normalizedSortBy === 'recentes') {
+          return rightTimestamp - leftTimestamp; // Mais recente primeiro (Decrescente)
+        }
+
+        // Fallback padrão: Mais recente primeiro
+        return rightTimestamp - leftTimestamp;
+      },
+    );
 
     // ─────────────────────────────────────────────────────────────────────────────
     // PAGINAÇÃO EM NÍVEL DE GRUPOS (offset/limit aplicado em memória após ordenação)
@@ -1537,11 +1983,18 @@ export class SalesService {
 
     return {
       data: sales,
+      summary,
       meta: {
         total,
         page: normalizedPage,
         limit: normalizedLimit,
         lastPage: Math.ceil(total / normalizedLimit) || 1,
+        summary: {
+          total: summary.totalCount,
+          pending: summary.pendingCount,
+          approved: summary.approvedCount,
+          canceled: summary.cancelledCount,
+        },
       },
     };
   }
@@ -1783,6 +2236,853 @@ export class SalesService {
     });
   }
 
+  async createSaleWithCustomerTriage(
+    saleData: {
+      customerId?: string;
+      cpf?: string;
+      cpfCnpj?: string;
+      customerData?: any;
+      origin: string;
+      destination: string;
+      departureDate: Date | string;
+      returnDate?: Date | string;
+      travelType: string;
+      servicesData?: any;
+      paymentMethod?: string;
+      totalValue?: number;
+      travelData?: {
+        origin?: string;
+        destination?: string;
+        departureDate?: string;
+        returnDate?: string;
+        travelType?: string;
+      };
+      servicesDetails?: Record<string, unknown>;
+      selectedServices?: string[];
+    },
+    userId: string,
+  ): Promise<{ sale: any; customerSource: 'local' | 'global' | 'new' }> {
+    const requestUserId = String(userId ?? '').trim();
+
+    if (!requestUserId) {
+      throw new UnauthorizedException('Usuário não autenticado.');
+    }
+
+    const normalizedSaleData = {
+      ...saleData,
+      origin: saleData.origin ?? saleData.travelData?.origin ?? '',
+      destination:
+        saleData.destination ?? saleData.travelData?.destination ?? '',
+      departureDate:
+        saleData.departureDate ?? saleData.travelData?.departureDate ?? null,
+      returnDate: saleData.returnDate ?? saleData.travelData?.returnDate,
+      travelType:
+        saleData.travelType ?? saleData.travelData?.travelType ?? 'ONE_WAY',
+      cpfCnpj: saleData.cpfCnpj ?? saleData.cpf,
+      servicesData: saleData.servicesData ?? saleData.servicesDetails,
+    };
+
+    if (!normalizedSaleData.origin || !normalizedSaleData.destination) {
+      throw new BadRequestException('Origem e destino são obrigatórios.');
+    }
+
+    if (!normalizedSaleData.departureDate) {
+      throw new BadRequestException('Data de ida é obrigatória.');
+    }
+
+    const departureDate =
+      normalizedSaleData.departureDate instanceof Date
+        ? normalizedSaleData.departureDate
+        : new Date(normalizedSaleData.departureDate);
+
+    if (Number.isNaN(departureDate.getTime())) {
+      throw new BadRequestException('Data de ida inválida.');
+    }
+
+    const returnDate = normalizedSaleData.returnDate
+      ? normalizedSaleData.returnDate instanceof Date
+        ? normalizedSaleData.returnDate
+        : new Date(normalizedSaleData.returnDate)
+      : undefined;
+
+    if (returnDate && Number.isNaN(returnDate.getTime())) {
+      throw new BadRequestException('Data de retorno inválida.');
+    }
+
+    const saleDateInput = (saleData as any)?.travelData?.saleDate;
+    const saleDate = saleDateInput ? new Date(saleDateInput) : departureDate;
+    const resolvedSaleDate = Number.isNaN(saleDate.getTime())
+      ? departureDate
+      : saleDate;
+
+    let customerId = saleData.customerId;
+    let customerSource: 'local' | 'global' | 'new' = 'local';
+
+    if (customerId) {
+      const existingCustomer = await this.prisma.customer.findUnique({
+        where: { id: customerId },
+        select: { id: true },
+      });
+
+      if (!existingCustomer) {
+        throw new NotFoundException(
+          `Cliente com id '${customerId}' não encontrado.`,
+        );
+      }
+
+      const hasLink = requestUserId
+        ? await this.prisma.userCustomer.findUnique({
+            where: {
+              userId_customerId: { userId: requestUserId, customerId },
+            },
+            select: { id: true },
+          })
+        : null;
+
+      customerSource = hasLink ? 'local' : 'global';
+
+      if (!hasLink && requestUserId) {
+        await this.prisma.userCustomer.create({
+          data: { userId: requestUserId, customerId },
+        });
+      }
+    }
+
+    if (!customerId) {
+      const rawCpf = String(normalizedSaleData.cpfCnpj ?? '').trim();
+      const normalizedCpf = this.normalizeDocument(rawCpf);
+      const cpfCandidates = Array.from(
+        new Set([rawCpf, normalizedCpf].filter(Boolean)),
+      );
+
+      const customerByCpf = cpfCandidates.length
+        ? await this.prisma.customer.findFirst({
+            where: {
+              OR: cpfCandidates.map((cpf) => ({ cpf })),
+            },
+            select: {
+              id: true,
+            },
+          })
+        : null;
+
+      if (customerByCpf) {
+        customerId = customerByCpf.id;
+
+        const hasLink = requestUserId
+          ? await this.prisma.userCustomer.findUnique({
+              where: {
+                userId_customerId: {
+                  userId: requestUserId,
+                  customerId: customerByCpf.id,
+                },
+              },
+              select: { id: true },
+            })
+          : null;
+
+        customerSource = hasLink ? 'local' : 'global';
+
+        // Vincula cliente ao usuário atual quando ainda não existe vínculo.
+        if (!hasLink && requestUserId) {
+          await this.prisma.userCustomer.create({
+            data: { userId: requestUserId, customerId: customerByCpf.id },
+          });
+        }
+      } else {
+        const customerData = this.isPlainObject(saleData.customerData)
+          ? saleData.customerData
+          : {};
+        const servicesData = this.isPlainObject(normalizedSaleData.servicesData)
+          ? normalizedSaleData.servicesData
+          : {};
+        const details = this.isPlainObject(servicesData.details)
+          ? servicesData.details
+          : {};
+
+        if (!normalizedCpf) {
+          throw new BadRequestException(
+            'CPF/CNPJ é obrigatório para criar cliente novo.',
+          );
+        }
+
+        const nomeCompleto = String(
+          customerData.nome_completo ??
+            customerData.razao_social ??
+            details.cliente ??
+            details.passageiro ??
+            '',
+        ).trim();
+
+        if (!nomeCompleto) {
+          throw new BadRequestException(
+            'Nome do cliente é obrigatório para criar cliente novo.',
+          );
+        }
+
+        const createdCustomer = await this.prisma.customer.create({
+          data: {
+            nome_completo: nomeCompleto,
+            razao_social:
+              String(customerData.razao_social ?? '').trim() || null,
+            cpf: normalizedCpf,
+            email:
+              String(customerData.email ?? '').trim() ||
+              `${normalizedCpf}@pending.local`,
+            telefone_celular:
+              String(customerData.telefone_celular ?? '').trim() ||
+              '00000000000',
+            endereco: String(customerData.endereco ?? '').trim() || 'N/A',
+            cep: String(customerData.cep ?? '').trim() || '00000000',
+            logradouro: String(customerData.logradouro ?? '').trim() || 'N/A',
+            bairro: String(customerData.bairro ?? '').trim() || 'N/A',
+            cidade: String(customerData.cidade ?? '').trim() || 'N/A',
+            estado: String(customerData.estado ?? '').trim() || 'N/A',
+          },
+          select: { id: true },
+        });
+
+        if (requestUserId) {
+          await this.prisma.userCustomer.create({
+            data: { userId: requestUserId, customerId: createdCustomer.id },
+          });
+        }
+
+        customerId = createdCustomer.id;
+        customerSource = 'new';
+      }
+    }
+
+    if (!customerId) {
+      throw new BadRequestException(
+        'Não foi possível resolver o cliente da venda.',
+      );
+    }
+
+    const providedServicesData = this.isPlainObject(
+      normalizedSaleData.servicesData,
+    )
+      ? normalizedSaleData.servicesData
+      : {};
+    const providedDetails = this.isPlainObject(providedServicesData.details)
+      ? providedServicesData.details
+      : {};
+    const providedTravel = this.isPlainObject(providedServicesData.travel)
+      ? providedServicesData.travel
+      : {};
+    const normalizedSelectedServices = Array.isArray(saleData.selectedServices)
+      ? saleData.selectedServices
+          .map((service) => String(service ?? '').trim())
+          .filter(Boolean)
+      : [];
+    const resolvedTravelType =
+      this.mapTravelType(normalizedSaleData.travelType) ?? TravelType.ONE_WAY;
+
+    const resolvedPaymentMethod =
+      typeof saleData.paymentMethod === 'string' &&
+      saleData.paymentMethod.trim().length > 0
+        ? saleData.paymentMethod.trim()
+        : String(providedDetails.paymentMethod ?? '').trim();
+
+    const resolvedTotalValue =
+      typeof saleData.totalValue === 'number' &&
+      Number.isFinite(saleData.totalValue)
+        ? saleData.totalValue
+        : Number(providedDetails.totalValue ?? 0) || 0;
+
+    // TODO: O status será atualizado via Lambda de faturamento do Wintour.
+    // Regra obrigatória: nenhuma venda nasce aprovada neste fluxo,
+    // independentemente de customerSource, servicesData recebido ou herança de tickets.
+    const forcedStatus = 'PENDING';
+
+    const nextServicesData = {
+      ...providedServicesData,
+      selectedServices: normalizedSelectedServices,
+      travel:
+        Object.keys(providedTravel).length > 0
+          ? providedTravel
+          : {
+              origin: normalizedSaleData.origin,
+              destination: normalizedSaleData.destination,
+              departureDate: departureDate.toISOString(),
+              returnDate: returnDate?.toISOString(),
+              travelType: resolvedTravelType,
+              saleDate: resolvedSaleDate.toISOString(),
+            },
+      details: {
+        ...providedDetails,
+        paymentMethod: resolvedPaymentMethod,
+        totalValue: resolvedTotalValue,
+      },
+      // Força status PENDING no payload persistido (top-level servicesData.status).
+      status: forcedStatus,
+    };
+
+    const createdSale = await this.prisma.sale.create({
+      data: {
+        customerId,
+        userId: requestUserId,
+        customerSource,
+        integrationStatus: IntegrationStatus.pending,
+        retryCount: 0,
+        lastErrorMessage: null,
+        lastIntegrationAt: null,
+        sale_date: resolvedSaleDate,
+        origin: normalizedSaleData.origin,
+        destination: normalizedSaleData.destination,
+        departureDate,
+        returnDate,
+        travelType: resolvedTravelType,
+        servicesData: nextServicesData as Prisma.InputJsonValue,
+        passengers: Array.isArray((saleData as any).passengers)
+          ? {
+              create: (saleData as any).passengers
+                .map((passenger: { name?: string }) =>
+                  String(passenger?.name ?? '').trim(),
+                )
+                .filter(Boolean)
+                .map((fullName: string) => ({ fullName })),
+            }
+          : undefined,
+      },
+      include: {
+        customer: true,
+        passengers: true,
+      },
+    });
+
+    return {
+      sale: createdSale,
+      customerSource,
+    };
+  }
+
+  async updateSaleStatusFromWintour(
+    saleId: string,
+    status: string,
+    errorMessage?: string,
+  ): Promise<any> {
+    const existingSale = await this.prisma.sale.findUnique({
+      where: { id: saleId },
+      select: {
+        id: true,
+        retryCount: true,
+        lastErrorMessage: true,
+      },
+    });
+
+    if (!existingSale) {
+      throw new NotFoundException(`Venda com id '${saleId}' não encontrada.`);
+    }
+
+    const normalizedStatus = this.normalizeIntegrationStatus(status);
+    const now = new Date();
+    const updateData: Prisma.SaleUpdateInput = {
+      lastIntegrationAt: now,
+    };
+
+    if (normalizedStatus === IntegrationStatus.success) {
+      updateData.integrationStatus = IntegrationStatus.success;
+      updateData.retryCount = 0;
+      updateData.lastErrorMessage = null;
+    } else if (normalizedStatus === IntegrationStatus.processing) {
+      updateData.integrationStatus = IntegrationStatus.processing;
+    } else if (normalizedStatus === IntegrationStatus.pending) {
+      updateData.integrationStatus = IntegrationStatus.pending;
+    } else {
+      const retryCount = existingSale.retryCount + 1;
+      updateData.integrationStatus =
+        this.resolveIntegrationFailureStatus(retryCount);
+      updateData.retryCount = retryCount;
+      updateData.lastErrorMessage =
+        errorMessage ?? existingSale.lastErrorMessage ?? status;
+    }
+
+    return this.prisma.sale.update({
+      where: { id: saleId },
+      data: updateData,
+    });
+  }
+
+  async findIntegrationIssues(page = 1, limit = 10, sinceDate?: Date) {
+    const skip = (page - 1) * limit;
+
+    const baseWhere = {
+      integrationStatus: {
+        in: [IntegrationStatus.error, IntegrationStatus.manual_pending],
+      },
+      ...(sinceDate ? { lastIntegrationAt: { gte: sinceDate } } : {}),
+    };
+
+    const [sales, total, metrics] = await Promise.all([
+      this.prisma.sale.findMany({
+        where: baseWhere,
+        include: {
+          customer: {
+            select: {
+              id: true,
+              nome_completo: true,
+              cpf: true,
+              email: true,
+            },
+          },
+        },
+        skip,
+        take: limit,
+        orderBy: {
+          lastIntegrationAt: 'desc',
+        },
+      }),
+      this.prisma.sale.count({ where: baseWhere }),
+      this.getIntegrationMetrics(),
+    ]);
+
+    const lastPage = Math.ceil(total / limit);
+
+    return {
+      data: sales.map((sale) => ({
+        id: sale.id,
+        customer: sale.customer,
+        retryCount: sale.retryCount,
+        lastErrorMessage: sale.lastErrorMessage,
+        lastIntegrationAt: sale.lastIntegrationAt,
+        integrationStatus: sale.integrationStatus,
+        nextRetryAt: sale.nextRetryAt,
+      })),
+      meta: {
+        total,
+        page,
+        limit,
+        lastPage,
+      },
+      metrics,
+    };
+  }
+
+  async getIntegrationMetrics(): Promise<IntegrationMetricsDto> {
+    const MAX_AUTO_RETRIES = 5;
+
+    const [statusGroups, retryAgg, oldestIssue, retryableCount] =
+      await Promise.all([
+        // Contagem por status em uma única query
+        this.prisma.sale.groupBy({
+          by: ['integrationStatus'],
+          where: {
+            integrationStatus: {
+              in: [IntegrationStatus.error, IntegrationStatus.manual_pending],
+            },
+          },
+          _count: { id: true },
+        }),
+        // Média de retryCount (aggregate em todas as vendas com problema)
+        this.prisma.sale.aggregate({
+          where: {
+            integrationStatus: {
+              in: [IntegrationStatus.error, IntegrationStatus.manual_pending],
+            },
+          },
+          _avg: { retryCount: true },
+        }),
+        // Venda mais antiga ainda com problema (menor lastIntegrationAt)
+        this.prisma.sale.findFirst({
+          where: {
+            integrationStatus: {
+              in: [IntegrationStatus.error, IntegrationStatus.manual_pending],
+            },
+            lastIntegrationAt: { not: null },
+          },
+          orderBy: { lastIntegrationAt: 'asc' },
+          select: { lastIntegrationAt: true },
+        }),
+        // Quantas podem ainda ser reprocessadas automaticamente
+        this.prisma.sale.count({
+          where: {
+            integrationStatus: IntegrationStatus.error,
+            retryCount: { lt: MAX_AUTO_RETRIES },
+          },
+        }),
+      ]);
+
+    const errorCount =
+      statusGroups.find((g) => g.integrationStatus === IntegrationStatus.error)
+        ?._count.id ?? 0;
+    const manualPendingCount =
+      statusGroups.find(
+        (g) => g.integrationStatus === IntegrationStatus.manual_pending,
+      )?._count.id ?? 0;
+
+    return {
+      errorCount,
+      manualPendingCount,
+      totalIssues: errorCount + manualPendingCount,
+      retryableCount,
+      avgRetryCount: Math.round((retryAgg._avg.retryCount ?? 0) * 10) / 10,
+      oldestIssueAt: oldestIssue?.lastIntegrationAt ?? null,
+    };
+  }
+
+  private buildMinimalWintourPayload(
+    sale: any,
+    customer: any,
+    nrArquivo: string,
+  ): CreateWintourImportInput {
+    const now = new Date();
+    const formattedDate = `${now.getDate().toString().padStart(2, '0')}/${(
+      now.getMonth() + 1
+    )
+      .toString()
+      .padStart(2, '0')}/${now.getFullYear()}`;
+    const formattedTime = `${now.getHours().toString().padStart(2, '0')}:${now
+      .getMinutes()
+      .toString()
+      .padStart(2, '0')}`;
+
+    const servicesData =
+      (sale.servicesData as Record<string, any> | null) ?? {};
+    const details =
+      (servicesData.details as Record<string, any> | undefined) ?? {};
+    const travel =
+      (servicesData.travel as Record<string, any> | undefined) ?? {};
+
+    return {
+      nr_arquivo: nrArquivo,
+      data_geracao: details.data_geracao || formattedDate,
+      hora_geracao: details.hora_geracao || formattedTime,
+      nome_agencia: details.nome_agencia || 'RETRY',
+      versao_xml: details.versao_xml || 4,
+      tickets: [
+        {
+          customer_id: sale.customerId,
+          cliente: customer.nome_completo,
+          passageiro: customer.nome_completo,
+          cid_dest_principal: sale.destination,
+          data_lancamento: sale.departureDate,
+          codigo_produto: details.codigo_produto,
+          forma_de_pagamento: details.forma_de_pagamento,
+          values: [
+            {
+              codigo: 'TOTAL',
+              valor: details.totalValue || 0,
+            },
+          ],
+          customer: {
+            razao_social: customer.nome_completo,
+            endereco: customer.endereco,
+            bairro: customer.bairro,
+            cep: customer.cep,
+            cidade: customer.cidade,
+            estado: customer.estado,
+            celular: customer.telefone_celular,
+            cpf_cnpj: customer.cpf,
+            email: customer.email,
+            dt_cadastro: customer.data_criacao_usuario,
+          },
+        },
+      ],
+    };
+  }
+
+  async retryWintourIntegration(saleId: string): Promise<any> {
+    // ── Passo 1: leitura para validação e coleta de payload/customer ──────────
+    const sale = await this.prisma.sale.findUnique({
+      where: { id: saleId },
+      include: { customer: true },
+    });
+
+    if (!sale) {
+      throw new NotFoundException(`Venda com id '${saleId}' não encontrada.`);
+    }
+
+    // Valida se a venda está em um status que permite retry
+    const retryableStatuses: IntegrationStatus[] = [
+      IntegrationStatus.error,
+      IntegrationStatus.manual_pending,
+    ];
+    if (!retryableStatuses.includes(sale.integrationStatus)) {
+      // Já em execução → conflito de concorrência
+      if (sale.integrationStatus === IntegrationStatus.processing) {
+        throw new ConflictException(
+          'Integração já está em andamento para esta venda.',
+        );
+      }
+      throw new BadRequestException(
+        `Venda com status '${sale.integrationStatus}' não pode ser reprocessada. ` +
+          'Apenas vendas com status error ou manual_pending podem ser reprocessadas.',
+      );
+    }
+
+    // Proteção contra retry looping: verifica cooldown mínimo de 2 minutos
+    if (sale.lastIntegrationAt) {
+      const msSinceLast = Date.now() - sale.lastIntegrationAt.getTime();
+      if (msSinceLast < RETRY_COOLDOWN_MS) {
+        const remainingSec = Math.ceil(
+          (RETRY_COOLDOWN_MS - msSinceLast) / 1000,
+        );
+        throw new BadRequestException(
+          `Aguarde ${remainingSec}s antes de reprocessar novamente (cooldown de 2 minutos entre tentativas).`,
+        );
+      }
+    }
+
+    // Verifica nextRetryAt se definido (agendamento de backoff)
+    if (sale.nextRetryAt && sale.nextRetryAt > new Date()) {
+      const remainingSec = Math.ceil(
+        (sale.nextRetryAt.getTime() - Date.now()) / 1000,
+      );
+      throw new BadRequestException(
+        `Venda agendada para retry em ${remainingSec}s. Aguarde antes de reprocessar manualmente.`,
+      );
+    }
+
+    // ── Passo 2: payload (antes do claim para viabilizar checagem de idempotência) ──
+    let payload: CreateWintourImportInput;
+    if (
+      sale.integrationPayload &&
+      typeof sale.integrationPayload === 'object'
+    ) {
+      payload = sale.integrationPayload as unknown as CreateWintourImportInput;
+    } else {
+      const nrArquivo = `RETRY_${saleId}_${Date.now()}`;
+      payload = this.buildMinimalWintourPayload(sale, sale.customer, nrArquivo);
+    }
+
+    // ── Passo 3: idempotência via idv_externo ─────────────────────────────────────
+    // Se outro sale com a mesma chave de integração (idv_externo dos tickets)
+    // já foi enviado ao Wintour com sucesso, marcamos este como success sem
+    // repetir a chamada SOAP.
+    const integrationKey = this.buildIntegrationKey(payload);
+    const duplicate = await this.prisma.sale.findFirst({
+      where: {
+        integrationKey,
+        integrationStatus: IntegrationStatus.success,
+      },
+      select: { id: true },
+    });
+
+    if (duplicate) {
+      this.logger.log(
+        `[retryWintourIntegration] Payload idempotente (key=${integrationKey}, ref=${duplicate.id}). Marcando ${saleId} como success sem reenviar.`,
+      );
+      await this.prisma.sale.update({
+        where: { id: saleId },
+        data: {
+          integrationStatus: IntegrationStatus.success,
+          retryCount: 0,
+          lastErrorMessage: null,
+          lastIntegrationAt: new Date(),
+          nextRetryAt: null,
+          integrationKey,
+        },
+      });
+      await this.integrationLogService.create({
+        saleId,
+        attempt: sale.retryCount + 1,
+        status: 'success',
+        payload,
+        response: { idempotent: true, ref: duplicate.id },
+      });
+      return this.findOne(saleId);
+    }
+
+    // ── Passo 4: claim atômico ────────────────────────────────────────────────
+    // Faz UPDATE somente se o status ainda for error/manual_pending.
+    // Se outra requisição concorrente já tiver alterado para processing,
+    // o count retorna 0 e abortamos sem efeito colateral.
+    const claimed = await this.prisma.sale.updateMany({
+      where: {
+        id: saleId,
+        integrationStatus: { in: retryableStatuses },
+      },
+      data: {
+        integrationStatus: IntegrationStatus.processing,
+        lastIntegrationAt: new Date(),
+      },
+    });
+
+    if (claimed.count === 0) {
+      throw new ConflictException(
+        'Integração já está em andamento para esta venda (requisição concorrente detectada).',
+      );
+    }
+
+    // ── Passo 5: envio ao Wintour ────────────────────────────────────────────
+    try {
+      // Tenta integração com Wintour
+      const integrationResult = await this.sendToWintour(payload, {
+        headerId: undefined,
+      });
+
+      // Marca como success
+      await this.prisma.sale.update({
+        where: { id: saleId },
+        data: {
+          integrationStatus: IntegrationStatus.success,
+          retryCount: 0,
+          lastErrorMessage: null,
+          lastIntegrationAt: new Date(),
+          nextRetryAt: null,
+          integrationKey,
+        },
+      });
+
+      await this.integrationLogService.create({
+        saleId,
+        attempt: sale.retryCount + 1,
+        status: 'success',
+        payload,
+        response: {
+          protocolo: integrationResult.protocolo,
+          raw_response: integrationResult.raw_response,
+        },
+      });
+
+      this.logger.log(
+        `[retryWintourIntegration] Venda ${saleId} reprocessada com sucesso.`,
+      );
+
+      return this.findOne(saleId);
+    } catch (error) {
+      const errorMessage =
+        error instanceof BadGatewayException
+          ? (() => {
+              const response = error.getResponse();
+              return typeof response === 'string'
+                ? response
+                : response
+                ? JSON.stringify(response)
+                : error.message;
+            })()
+          : error instanceof Error
+          ? error.message
+          : String(error);
+
+      // Incrementa retry count e determina novo status
+      const currentSale = await this.prisma.sale.findUnique({
+        where: { id: saleId },
+        select: { retryCount: true },
+      });
+
+      const newRetryCount = (currentSale?.retryCount ?? 0) + 1;
+      const newStatus = this.resolveIntegrationFailureStatus(newRetryCount);
+      const nextRetryAt = this.calcNextRetryAt(newRetryCount);
+
+      await this.prisma.sale.update({
+        where: { id: saleId },
+        data: {
+          integrationStatus: newStatus,
+          retryCount: newRetryCount,
+          lastErrorMessage: errorMessage,
+          lastIntegrationAt: new Date(),
+          nextRetryAt,
+        },
+      });
+
+      await this.integrationLogService.create({
+        saleId,
+        attempt: newRetryCount,
+        status: 'error',
+        payload,
+        error: errorMessage,
+      });
+
+      this.logger.error(
+        `[retryWintourIntegration] Venda ${saleId} falhou no retry. Tentativa ${newRetryCount}. Erro: ${errorMessage}`,
+      );
+
+      throw error;
+    }
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async scheduleIntegrationRetry() {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+
+    const wintourRetryConfig = this.configService.get('wintourRetry');
+
+    if (!wintourRetryConfig?.enabled) {
+      return;
+    }
+
+    // Re-entrancy guard: descarta o ciclo se o anterior ainda estiver rodando.
+    if (this.isCronRunning) {
+      this.logger.warn(
+        '[scheduleIntegrationRetry] Ciclo anterior ainda em execução. Pulando este disparo.',
+      );
+      return;
+    }
+
+    this.isCronRunning = true;
+
+    try {
+      const startTime = Date.now();
+      this.logger.debug(
+        '[scheduleIntegrationRetry] Iniciando verificação de vendas com erro para retry automático.',
+      );
+
+      const maxRetries = wintourRetryConfig.maxRetries ?? 5;
+      const maxSalesPerCycle = wintourRetryConfig.maxSalesPerCycle ?? 10;
+
+      const now = new Date();
+
+      // Busca vendas com status "error", retryCount < maxRetries e nextRetryAt vencido (ou nulo)
+      const failedSales = await this.prisma.sale.findMany({
+        where: {
+          integrationStatus: IntegrationStatus.error,
+          retryCount: { lt: maxRetries },
+          OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+        },
+        select: {
+          id: true,
+          retryCount: true,
+          lastIntegrationAt: true,
+          nextRetryAt: true,
+        },
+        take: maxSalesPerCycle,
+      });
+
+      if (!failedSales.length) {
+        this.logger.debug(
+          '[scheduleIntegrationRetry] Nenhuma venda com erro para reprocessar.',
+        );
+        return;
+      }
+
+      let successCount = 0;
+      let failureCount = 0;
+
+      for (const sale of failedSales) {
+        try {
+          await this.retryWintourIntegration(sale.id);
+          successCount++;
+          this.logger.log(
+            `[scheduleIntegrationRetry] ✓ Venda ${sale.id} reprocessada com sucesso.`,
+          );
+        } catch (error) {
+          failureCount++;
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            `[scheduleIntegrationRetry] ✗ Falha ao reprocessar venda ${sale.id}: ${errorMsg}`,
+          );
+        }
+      }
+
+      const duration = Date.now() - startTime;
+      this.logger.log(
+        `[scheduleIntegrationRetry] Ciclo concluído: ${successCount} sucesso, ${failureCount} falha, ${duration}ms total.`,
+      );
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `[scheduleIntegrationRetry] Erro crítico no agendador: ${errorMsg}`,
+      );
+    } finally {
+      this.isCronRunning = false;
+    }
+  }
+
   private async createSalesFromHeader(
     header: {
       id: string;
@@ -1814,10 +3114,13 @@ export class SalesService {
     },
     selectedServicesInput?: string[],
     servicesDetailsInput?: Record<string, unknown>,
+    userId?: string,
     prismaClient: Prisma.TransactionClient | PrismaService = this.prisma,
-  ): Promise<number> {
+    integrationPayload?: CreateWintourImportInput,
+  ): Promise<{ created: number; saleId: string | null }> {
     let created = 0;
     let skipped = 0;
+    let createdSaleId: string | null = null;
 
     let customerId: string | null = null;
     let destination = '';
@@ -1931,11 +3234,23 @@ export class SalesService {
         normalizedSelectedServices.length > 0
           ? normalizedSelectedServices
           : Array.from(selectedServices);
-      const status = resolvedTotalValue > 0 ? 'APPROVED' : 'PENDING';
+      // TODO: O status será atualizado via Lambda de faturamento do Wintour dentro deste bloco também.
+      const forcedStatus = 'PENDING';
 
-      await prismaClient.sale.create({
+      const createdSale = await prismaClient.sale.create({
         data: {
+          userId: userId ?? undefined,
           customerId,
+          integrationStatus: IntegrationStatus.pending,
+          retryCount: 0,
+          lastErrorMessage: null,
+          lastIntegrationAt: null,
+          integrationPayload: integrationPayload
+            ? (integrationPayload as unknown as Prisma.InputJsonValue)
+            : null,
+          integrationKey: integrationPayload
+            ? this.buildIntegrationKey(integrationPayload)
+            : null,
           sale_date: saleDate ?? departureDate ?? new Date(),
           origin: nomeAgencia ?? '',
           destination,
@@ -1955,7 +3270,7 @@ export class SalesService {
                     returnDate: undefined,
                     travelType: 'ONE_WAY',
                   },
-            status,
+            status: forcedStatus,
             selectedServices: resolvedSelectedServices,
             details: {
               ...providedDetails,
@@ -1980,7 +3295,9 @@ export class SalesService {
             },
           } as Prisma.InputJsonValue,
         },
+        select: { id: true },
       });
+      createdSaleId = createdSale.id;
       created = 1;
     }
 
@@ -1988,6 +3305,6 @@ export class SalesService {
       `[createSalesFromHeader] Header ${header.id}: sales criadas=${created}, ignoradas=${skipped}`,
     );
 
-    return created;
+    return { created, saleId: createdSaleId };
   }
 }
